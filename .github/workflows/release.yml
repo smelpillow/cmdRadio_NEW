@@ -30,18 +30,16 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release
 
       - name: Package (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/${{ matrix.target }}/release/${{ matrix.bin }} dist/
+          Copy-Item target/release/${{ matrix.bin }} dist/
           Compress-Archive -Path dist/* -DestinationPath cmdradio-${{ github.ref_name }}-${{ matrix.target }}.zip
 
       - name: Package (Linux)
@@ -49,7 +47,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/${{ matrix.bin }} dist/
+          cp target/release/${{ matrix.bin }} dist/
           tar -czf cmdradio-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C dist .
 
       - name: Upload artifact
