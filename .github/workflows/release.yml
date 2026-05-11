@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -46,12 +46,14 @@ jobs:
 
       - name: Package (Linux)
         if: matrix.archive == 'tar.gz'
+        shell: bash
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/${{ matrix.bin }} dist/
           tar -czf cmdradio-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C dist .
 
       - name: Upload artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cmdradio-${{ matrix.target }}
