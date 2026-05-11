@@ -123,7 +123,7 @@ impl RadioPlayer {
     pub fn current_metadata(&self) -> Option<IcyMetadata> {
         self.icy_metadata
             .as_ref()
-            .and_then(|h| h.lock().ok())
+            .map(|h| h.lock().unwrap_or_else(|e| e.into_inner()))
             .and_then(|m| m.clone())
     }
 

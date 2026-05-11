@@ -28,7 +28,7 @@ fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
 
     let title = format!(
-        "Playlists ({}) - Enter open, r shuffle, q back",
+        "Playlists ({}) - Enter open, r shuffle, ? help, q back",
         app.config.playlists_dir.display()
     );
     let list = List::new(items)
@@ -44,26 +44,39 @@ fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn render_stations(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let filtered = app.filtered_station_indices();
     let items: Vec<ListItem<'_>> = if app.stations.is_empty() {
         vec![ListItem::new("No stations loaded")]
+    } else if filtered.is_empty() {
+        vec![ListItem::new("No station matches current search")]
     } else {
-        app.stations
-            .iter()
-            .map(|s| ListItem::new(s.name.clone()))
+        filtered
+            .into_iter()
+            .filter_map(|i| app.stations.get(i).map(|s| (i, s)))
+            .map(|(i, s)| {
+                let marker = if app.is_station_favorite(i) { "* " } else { "  " };
+                ListItem::new(format!("{marker}{}", s.name))
+            })
             .collect()
     };
 
+    let mut title = String::from("Stations - Enter play, / search, * favorite, ? help, q back");
+    if app.is_station_search_mode() {
+        title = format!("Stations Search [{}] - type to filter, Esc exit", app.station_search_query());
+    } else if !app.station_search_query().is_empty() {
+        title = format!(
+            "Stations Filter [{}] - Enter play, / new search, * favorite",
+            app.station_search_query()
+        );
+    }
+
     let list = List::new(items)
-        .block(
-            Block::default()
-                .title("Stations - Enter play, q back")
-                .borders(Borders::ALL),
-        )
+        .block(Block::default().title(title).borders(Borders::ALL))
         .highlight_style(Style::default().add_modifier(Modifier::BOLD))
         .highlight_symbol(" > ");
 
     let mut state = ListState::default();
-    if !app.stations.is_empty() {
+    if !items.is_empty() {
         state.select(Some(app.station_index));
     }
     frame.render_stateful_widget(list, area, &mut state);

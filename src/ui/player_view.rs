@@ -12,10 +12,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let artist = app.icy_artist().unwrap_or_else(|| String::from("--"));
     let title = app.icy_title().unwrap_or_else(|| String::from("--"));
     let url = app.selected_station_url().unwrap_or("<none>");
+    let favorites = app.favorites_count();
+    let history = app.history_count();
 
     let text = format!(
-        "Station: {}\nState:   {}\nRandom:  {}\nVolume:  {}%\n\nArtist: {}\nTitle:  {}\n\nURL: {}\n\nControls:\nSpace    : Play/Pause\nn / Right: Next station\nr        : Toggle shuffle\n+/-      : Volume +/- 5% (max 100%)\nq        : Back to station list",
-        name, state, random_mode, volume, artist, title, url
+        "Station: {}\nState:   {}\nRandom:  {}\nVolume:  {}%\n\nArtist: {}\nTitle:  {}\n\nURL: {}\n\nFavorites: {}\nHistory:   {}\n\nControls:\nSpace    : Play/Pause\nn / Right: Next station\nr        : Toggle shuffle\n*        : Toggle favorite\n+/-      : Volume +/- 5% (max 100%)\n?        : Help\nq        : Back to station list",
+        name, state, random_mode, volume, artist, title, url, favorites, history
     );
 
     let widget = Paragraph::new(text)

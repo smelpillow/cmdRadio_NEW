@@ -15,7 +15,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title("cmdRadio - Main Menu")
+                .title("cmdRadio - Main Menu (? help)")
                 .borders(Borders::ALL),
         )
         .highlight_style(Style::default().add_modifier(Modifier::BOLD))

@@ -36,3 +36,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Navigation handling to avoid double movement per key press.
 - HTTP radio playback artifacts by separating ICY metadata from audio stream before decoding.
 - Automatic station failover: when a station does not respond within timeout, playback advances to next station.
+
+## [0.3.0] - 2026-05-11
+
+### Added
+
+- Little changes.
