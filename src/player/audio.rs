@@ -1,9 +1,10 @@
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 
-use crate::player::stream::{HttpStream, IcyMetadata, IcyMetadataHandle};
+use crate::player::stream::{HttpStream, IcyMetadata, IcyMetadataHandle, IcyStream, RadioStream};
 
 pub struct RadioPlayer {
     output_stream: Option<OutputStream>,
@@ -26,23 +27,37 @@ impl RadioPlayer {
         })
     }
 
-    pub fn play_from_url(&mut self, url: &str) -> Result<(), String> {
+    pub fn play_from_url(&mut self, url: &str, timeout: Duration) -> Result<(), String> {
         self.stop();
         self.ensure_output()?;
 
-        let response = ureq::get(url)
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(timeout)
+            .timeout_read(timeout)
+            .timeout_write(timeout)
+            .build();
+
+        let response = agent
+            .get(url)
             .set("Icy-MetaData", "1")
             .call()
             .map_err(|e| format!("http request failed: {e}"))?;
 
-        let _icy_metaint = response
+        let icy_metaint = response
             .header("icy-metaint")
-            .and_then(|v| v.parse::<usize>().ok());
+            .and_then(|v| v.trim().parse::<usize>().ok());
 
-        self.icy_metadata = Some(Arc::new(Mutex::new(None)));
-
+        let metadata_handle = Arc::new(Mutex::new(None));
         let reader = response.into_reader();
-        let stream = HttpStream::new(Box::new(reader));
+
+        let stream = if let Some(metaint) = icy_metaint.filter(|v| *v > 0) {
+            self.icy_metadata = Some(Arc::clone(&metadata_handle));
+            RadioStream::Icy(IcyStream::new(Box::new(reader), metaint, metadata_handle))
+        } else {
+            self.icy_metadata = Some(metadata_handle);
+            RadioStream::Http(HttpStream::new(Box::new(reader)))
+        };
+
         let decoder = Decoder::new(BufReader::new(stream))
             .map_err(|e| format!("decoder error. stream may require unsupported codec: {e}"))?;
 
@@ -98,7 +113,7 @@ impl RadioPlayer {
     }
 
     pub fn adjust_volume(&mut self, delta: f32) -> f32 {
-        self.volume = (self.volume + delta).clamp(0.0, 2.0);
+        self.volume = (self.volume + delta).clamp(0.0, 1.0);
         if let Some(sink) = &self.sink {
             sink.set_volume(self.volume);
         }

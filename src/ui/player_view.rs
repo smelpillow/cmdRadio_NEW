@@ -7,14 +7,15 @@ use crate::app::App;
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let name = app.selected_station_name().unwrap_or("<none>");
     let state = app.playback_state_label();
+    let random_mode = app.shuffle_label();
     let volume = app.volume_percent();
     let artist = app.icy_artist().unwrap_or_else(|| String::from("--"));
     let title = app.icy_title().unwrap_or_else(|| String::from("--"));
     let url = app.selected_station_url().unwrap_or("<none>");
 
     let text = format!(
-        "Station: {}\nState:   {}\nVolume:  {}%\n\nArtist: {}\nTitle:  {}\n\nURL: {}\n\nControls:\nSpace    : Play/Pause\nn / Right: Next station\nr        : Toggle shuffle\n+/-      : Volume adjust\nq        : Back to station list",
-        name, state, volume, artist, title, url
+        "Station: {}\nState:   {}\nRandom:  {}\nVolume:  {}%\n\nArtist: {}\nTitle:  {}\n\nURL: {}\n\nControls:\nSpace    : Play/Pause\nn / Right: Next station\nr        : Toggle shuffle\n+/-      : Volume +/- 5% (max 100%)\nq        : Back to station list",
+        name, state, random_mode, volume, artist, title, url
     );
 
     let widget = Paragraph::new(text)

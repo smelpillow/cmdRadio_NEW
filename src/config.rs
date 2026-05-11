@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub volume: f32,
+    #[serde(default = "default_stream_start_timeout_secs")]
+    pub stream_start_timeout_secs: u64,
 }
 
 impl AppConfig {
@@ -43,6 +45,7 @@ impl AppConfig {
                 data_dir: paths.data_dir.clone(),
                 cache_dir: paths.cache_dir.clone(),
                 volume: 1.0,
+                stream_start_timeout_secs: default_stream_start_timeout_secs(),
             };
             cfg.save()?;
             Ok(cfg)
@@ -105,6 +108,10 @@ impl AppConfig {
             .map_err(|e| format!("failed cleanup in {}: {e}", path.display()))?;
         Ok(())
     }
+}
+
+fn default_stream_start_timeout_secs() -> u64 {
+    8
 }
 
 #[derive(Debug, Clone)]

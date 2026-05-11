@@ -1,5 +1,6 @@
 use crossterm::event::KeyCode;
 use rand::Rng;
+use std::time::Duration;
 
 use crate::config::AppConfig;
 use crate::m3u::parser::{Station, parse_m3u_file, scan_m3u_files};
@@ -170,11 +171,11 @@ impl App {
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
                 let new_vol = self.player.adjust_volume(0.05);
-                self.status = format!("Volume: {}%", (new_vol * 100.0) as u8);
+                self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
                 let new_vol = self.player.adjust_volume(-0.05);
-                self.status = format!("Volume: {}%", (new_vol * 100.0) as u8);
+                self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
             }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::StationBrowser,
             _ => {}
@@ -195,15 +196,45 @@ impl App {
     }
 
     fn start_station(&mut self, index: usize) {
-        if let Some(station) = self.stations.get(index) {
-            match self.player.play_from_url(&station.url) {
+        if self.stations.is_empty() {
+            self.status = String::from("No stations loaded");
+            return;
+        }
+
+        let timeout = Duration::from_secs(self.config.stream_start_timeout_secs.max(1));
+        let mut candidate = index.min(self.stations.len().saturating_sub(1));
+        let mut retries_left = self.stations.len().saturating_sub(1);
+        let mut last_err: Option<String> = None;
+
+        loop {
+            let Some(station) = self.stations.get(candidate) else {
+                self.status = String::from("Invalid station index");
+                return;
+            };
+
+            match self.player.play_from_url(&station.url, timeout) {
                 Ok(()) => {
-                    self.selected_station_index = Some(index);
+                    self.selected_station_index = Some(candidate);
                     self.screen = Screen::Player;
-                    self.status = format!("Playing {}", station.name);
+                    if let Some(prev_err) = last_err {
+                        self.status = format!("Recovered: playing {} after failover ({prev_err})", station.name);
+                    } else {
+                        self.status = format!("Playing {}", station.name);
+                    }
+                    return;
                 }
                 Err(err) => {
-                    self.status = format!("Playback error: {err}");
+                    last_err = Some(err.clone());
+                    if retries_left == 0 {
+                        self.status = format!(
+                            "Playback error after retries (timeout {}s): {err}",
+                            self.config.stream_start_timeout_secs.max(1)
+                        );
+                        return;
+                    }
+
+                    retries_left -= 1;
+                    candidate = self.next_index_from(candidate);
                 }
             }
         }
@@ -215,23 +246,30 @@ impl App {
             return;
         }
 
-        let next_index = if self.shuffle {
-            let mut rng = rand::rng();
-            if self.stations.len() == 1 {
-                0
-            } else {
-                let mut candidate = rng.random_range(0..self.stations.len());
-                if Some(candidate) == self.selected_station_index {
-                    candidate = (candidate + 1) % self.stations.len();
-                }
-                candidate
-            }
-        } else {
-            let current = self.selected_station_index.unwrap_or(0);
-            (current + 1) % self.stations.len()
-        };
+        let current = self.selected_station_index.unwrap_or(0);
+        let next_index = self.next_index_from(current);
 
         self.start_station(next_index);
+    }
+
+    fn next_index_from(&self, current: usize) -> usize {
+        if self.stations.is_empty() {
+            return 0;
+        }
+
+        if self.shuffle {
+            if self.stations.len() == 1 {
+                return 0;
+            }
+            let mut rng = rand::rng();
+            let mut candidate = rng.random_range(0..self.stations.len());
+            if candidate == current {
+                candidate = (candidate + 1) % self.stations.len();
+            }
+            candidate
+        } else {
+            (current + 1) % self.stations.len()
+        }
     }
 
     pub fn selected_station_name(&self) -> Option<&str> {
@@ -257,7 +295,11 @@ impl App {
     }
 
     pub fn volume_percent(&self) -> u8 {
-        (self.player.volume() * 100.0) as u8
+        (self.player.volume() * 100.0).round().clamp(0.0, 100.0) as u8
+    }
+
+    pub fn shuffle_label(&self) -> &'static str {
+        if self.shuffle { "ON" } else { "OFF" }
     }
 
     pub fn icy_artist(&self) -> Option<String> {

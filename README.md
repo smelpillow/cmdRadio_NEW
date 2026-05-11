@@ -6,7 +6,11 @@ Terminal-based online radio player in Rust with M3U playlist support.
 
 - Main menu and terminal UI navigation.
 - Playlist browser for `.m3u` and `.m3u8` files.
-- Player screen with Play/Pause/Next actions.
+- Player screen with playback state (`Playing` / `Paused` / `Stopped`).
+- Player screen with visible random mode indicator (`ON` / `OFF`).
+- Volume controls from keyboard with live percentage display.
+- ICY metadata display (`artist` and `title`) when provided by the stream.
+- Player controls for Play/Pause/Next actions.
 - Shuffle mode for station selection.
 - Runtime files always stored in user directories (safe permissions model).
 - No external system dependencies required.
@@ -44,6 +48,8 @@ Then open Configuration and press `b` once to copy the sample playlist into your
 - `Space`: play/pause
 - `n` or right arrow: next station
 - `r`: toggle shuffle
+- `+` / `=`: volume up (+5%, max 100%)
+- `-` / `_`: volume down (-5%, min 0%)
 - `q` / `Esc`: back/exit
 
 ## Development
