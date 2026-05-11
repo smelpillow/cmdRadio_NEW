@@ -7,7 +7,7 @@ mod ui;
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -16,6 +16,29 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::app::App;
+
+struct TerminalGuard {
+    active: bool,
+}
+
+impl TerminalGuard {
+    fn new() -> Self {
+        Self { active: true }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        }
+    }
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -29,6 +52,7 @@ fn run() -> Result<(), String> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)
         .map_err(|e| format!("failed to enter alternate screen: {e}"))?;
+    let mut terminal_guard = TerminalGuard::new();
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(|e| format!("terminal init failed: {e}"))?;
@@ -43,6 +67,7 @@ fn run() -> Result<(), String> {
 
         if event::poll(Duration::from_millis(200)).map_err(|e| format!("poll failed: {e}"))?
             && let Event::Key(key) = event::read().map_err(|e| format!("event read failed: {e}"))?
+            && key.kind == KeyEventKind::Press
         {
             should_quit = app.on_key(key.code);
         }
@@ -54,6 +79,7 @@ fn run() -> Result<(), String> {
     terminal
         .show_cursor()
         .map_err(|e| format!("failed to show cursor: {e}"))?;
+    terminal_guard.disarm();
 
     Ok(())
 }

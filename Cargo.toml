@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
-rodio = { version = "0.20", features = ["symphonia-mp3", "symphonia-aac", "symphonia-vorbis"] }
+rodio = { version = "0.20", default-features = false, features = ["mp3", "symphonia-aac", "symphonia-vorbis"] }
 ureq = { version = "2.12", default-features = false, features = ["tls", "gzip"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"

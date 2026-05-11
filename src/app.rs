@@ -168,6 +168,14 @@ impl App {
                 self.shuffle = !self.shuffle;
                 self.status = format!("Shuffle {}", if self.shuffle { "ON" } else { "OFF" });
             }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                let new_vol = self.player.adjust_volume(0.05);
+                self.status = format!("Volume: {}%", (new_vol * 100.0) as u8);
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                let new_vol = self.player.adjust_volume(-0.05);
+                self.status = format!("Volume: {}%", (new_vol * 100.0) as u8);
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::StationBrowser,
             _ => {}
         }
@@ -236,6 +244,28 @@ impl App {
         self.selected_station_index
             .and_then(|i| self.stations.get(i))
             .map(|s| s.url.as_str())
+    }
+
+    pub fn playback_state_label(&self) -> &'static str {
+        if !self.player.has_active_stream() {
+            "Stopped"
+        } else if self.player.is_paused() {
+            "Paused"
+        } else {
+            "Playing"
+        }
+    }
+
+    pub fn volume_percent(&self) -> u8 {
+        (self.player.volume() * 100.0) as u8
+    }
+
+    pub fn icy_artist(&self) -> Option<String> {
+        self.player.current_metadata().and_then(|m| m.artist)
+    }
+
+    pub fn icy_title(&self) -> Option<String> {
+        self.player.current_metadata().and_then(|m| m.title)
     }
 
     fn refresh_playlists(&mut self) {

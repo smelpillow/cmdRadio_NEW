@@ -1,4 +1,5 @@
 use std::io::{Read, Result as IoResult, Seek, SeekFrom};
+use std::sync::{Arc, Mutex};
 
 pub struct HttpStream {
     inner: Box<dyn Read + Send + Sync>,
@@ -24,3 +25,28 @@ impl Seek for HttpStream {
         ))
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct IcyMetadata {
+    pub artist: Option<String>,
+    pub title: Option<String>,
+}
+
+impl IcyMetadata {
+    #[allow(dead_code)]
+    pub fn from_stream_title(stream_title: &str) -> Self {
+        if let Some((artist, title)) = stream_title.split_once(" - ") {
+            Self {
+                artist: Some(artist.to_string()),
+                title: Some(title.to_string()),
+            }
+        } else {
+            Self {
+                artist: None,
+                title: Some(stream_title.to_string()),
+            }
+        }
+    }
+}
+
+pub type IcyMetadataHandle = Arc<Mutex<Option<IcyMetadata>>>;

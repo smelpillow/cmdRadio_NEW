@@ -1,14 +1,17 @@
 use std::io::BufReader;
+use std::sync::{Arc, Mutex};
 
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 
-use crate::player::stream::HttpStream;
+use crate::player::stream::{HttpStream, IcyMetadata, IcyMetadataHandle};
 
 pub struct RadioPlayer {
     output_stream: Option<OutputStream>,
     stream_handle: Option<OutputStreamHandle>,
     sink: Option<Sink>,
     paused: bool,
+    volume: f32,
+    icy_metadata: Option<IcyMetadataHandle>,
 }
 
 impl RadioPlayer {
@@ -18,6 +21,8 @@ impl RadioPlayer {
             stream_handle: None,
             sink: None,
             paused: false,
+            volume: 1.0,
+            icy_metadata: None,
         })
     }
 
@@ -26,8 +31,15 @@ impl RadioPlayer {
         self.ensure_output()?;
 
         let response = ureq::get(url)
+            .set("Icy-MetaData", "1")
             .call()
             .map_err(|e| format!("http request failed: {e}"))?;
+
+        let _icy_metaint = response
+            .header("icy-metaint")
+            .and_then(|v| v.parse::<usize>().ok());
+
+        self.icy_metadata = Some(Arc::new(Mutex::new(None)));
 
         let reader = response.into_reader();
         let stream = HttpStream::new(Box::new(reader));
@@ -40,6 +52,7 @@ impl RadioPlayer {
             .ok_or_else(|| String::from("audio stream handle not available"))?;
 
         let sink = Sink::try_new(handle).map_err(|e| format!("failed to create sink: {e}"))?;
+        sink.set_volume(self.volume);
         sink.append(decoder);
         sink.play();
 
@@ -69,6 +82,34 @@ impl RadioPlayer {
             sink.stop();
         }
         self.paused = false;
+        self.icy_metadata = None;
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    pub fn has_active_stream(&self) -> bool {
+        self.sink.is_some()
+    }
+
+    pub fn volume(&self) -> f32 {
+        self.volume
+    }
+
+    pub fn adjust_volume(&mut self, delta: f32) -> f32 {
+        self.volume = (self.volume + delta).clamp(0.0, 2.0);
+        if let Some(sink) = &self.sink {
+            sink.set_volume(self.volume);
+        }
+        self.volume
+    }
+
+    pub fn current_metadata(&self) -> Option<IcyMetadata> {
+        self.icy_metadata
+            .as_ref()
+            .and_then(|h| h.lock().ok())
+            .and_then(|m| m.clone())
     }
 
     fn ensure_output(&mut self) -> Result<(), String> {
