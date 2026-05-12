@@ -2,6 +2,10 @@
 
 Terminal-based online radio player in Rust with M3U playlist support.
 
+## Project Evolution
+
+**cmdRadio** started as a PowerShell script (see [original repo](https://github.com/smelpillow/cmdRadio)) and later evolved into a Python implementation (see [Python repo](https://github.com/smelpillow/cmdRadioPy)), both relying on **mpv** as the audio backend. This **Rust version** marks a significant architectural shift: it replaces the external mpv dependency with a **custom-built audio player engine** using `rodio`, eliminating all system-level media player dependencies while improving performance and portability. No external tools required—just pure Rust.
+
 ## Features
 
 - Main menu and terminal UI navigation.

@@ -13,6 +13,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Replaced mpv-based playback with a custom Rust audio engine (using `rodio` + `symphonia`), eliminating external media player dependencies.
+- Improved audio stability with built-in stream health monitoring and automatic failover on stall detection.
 - Removed the bottom `Status` panel to use full terminal space for content.
 - Added `cmdRadio v0.3.1` branding in main screens (menu, playlists, stations, player, help, config).
 
