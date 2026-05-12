@@ -9,6 +9,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let items = vec![
         ListItem::new("Browse M3U playlists"),
         ListItem::new("Full random (M3U + station)"),
+        ListItem::new("Favorites"),
         ListItem::new("Configuration"),
         ListItem::new("Exit"),
     ];

@@ -31,14 +31,24 @@ const PLAYLIST_CACHE_FILE_NAME: &str = "playlist_cache.json";
 const HISTORY_LIMIT: usize = 50;
 const PAGE_STEP: usize = 12;
 const PLAYBACK_STALL_TIMEOUT_SECS: u64 = 10;
+const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.3.1";
+const APP_TITLE: &str = "cmdRadio v0.3.3";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
     name: String,
     url: String,
     played_at_epoch_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FavoriteEntry {
+    url: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +101,7 @@ pub struct App {
     station_query: String,
     playlist_search_mode: bool,
     playlist_query: String,
-    favorite_urls: HashSet<String>,
+    favorites: Vec<FavoriteEntry>,
     playlist_cache: PlaylistCacheStore,
     history: Vec<HistoryEntry>,
     connection_events: Option<Receiver<ConnectEvent>>,
@@ -109,7 +119,7 @@ impl App {
     pub fn new() -> Result<Self, String> {
         let config = AppConfig::load_or_create()?;
         config.ensure_directories()?;
-        let favorite_urls = Self::load_favorites(&config.data_dir);
+        let favorites = Self::load_favorites(&config.data_dir);
         let history = Self::load_history(&config.data_dir);
         let playlist_cache = Self::load_playlist_cache(&config.data_dir);
 
@@ -132,7 +142,7 @@ impl App {
             station_query: String::new(),
             playlist_search_mode: false,
             playlist_query: String::new(),
-            favorite_urls,
+            favorites,
             playlist_cache,
             history,
             connection_events: None,
@@ -174,7 +184,7 @@ impl App {
     }
 
     fn handle_main_menu(&mut self, code: KeyCode) -> bool {
-        let menu_len = 4;
+        let menu_len = 5;
         match code {
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                 if self.main_menu_index > 0 {
@@ -195,8 +205,9 @@ impl App {
                     self.screen = Screen::PlaylistBrowser;
                 }
                 1 => self.start_full_random(),
-                2 => self.screen = Screen::Config,
-                3 => return true,
+                2 => self.open_favorites_browser(),
+                3 => self.screen = Screen::Config,
+                4 => return true,
                 _ => {}
             },
             KeyCode::Char('q') | KeyCode::Char('Q') => return true,
@@ -660,6 +671,53 @@ impl App {
         self.status = String::from("No valid stations found across playlists for full random");
     }
 
+    fn open_favorites_browser(&mut self) {
+        self.refresh_playlists();
+
+        if self.favorites.is_empty() {
+            self.status = String::from("No favorites saved yet");
+            return;
+        }
+
+        let mut favorites_list = Vec::new();
+        let mut seen_urls = HashSet::new();
+
+        for path in self.playlists.clone() {
+            let stations = match self.load_stations_for_playlist(&path) {
+                Ok(stations) => stations,
+                Err(_) => continue,
+            };
+
+            for station in stations {
+                if !self.is_url_favorite(&station.url) {
+                    continue;
+                }
+
+                if seen_urls.insert(station.url.clone()) {
+                    favorites_list.push(station);
+                }
+            }
+        }
+
+        if favorites_list.is_empty() {
+            self.status = String::from("No favorite stations found in current playlists");
+            return;
+        }
+
+        favorites_list.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+
+        self.full_random_mode = false;
+        self.stations = favorites_list;
+        self.station_index = 0;
+        self.selected_station_index = None;
+        self.station_search_mode = false;
+        self.station_favorites_only = false;
+        self.station_query.clear();
+        self.current_playlist = None;
+        self.screen = Screen::StationBrowser;
+        self.status = format!("Favorites loaded: {} stations", self.stations.len());
+    }
+
     fn next_station(&mut self) {
         if self.stations.is_empty() {
             self.status = String::from("No stations loaded");
@@ -819,7 +877,7 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(index, station)| {
-                if self.station_favorites_only && !self.favorite_urls.contains(&station.url) {
+                if self.station_favorites_only && !self.is_url_favorite(&station.url) {
                     return None;
                 }
 
@@ -841,16 +899,30 @@ impl App {
     pub fn is_station_favorite(&self, station_index: usize) -> bool {
         self.stations
             .get(station_index)
-            .map(|station| self.favorite_urls.contains(&station.url))
+            .map(|station| self.is_url_favorite(&station.url))
             .unwrap_or(false)
     }
 
     pub fn favorites_count(&self) -> usize {
-        self.favorite_urls.len()
+        self.favorites.len()
     }
 
-    pub fn history_count(&self) -> usize {
-        self.history.len()
+    fn is_url_favorite(&self, url: &str) -> bool {
+        self.favorites.iter().any(|fav| fav.url == url)
+    }
+
+    fn add_favorite(&mut self, station: &Station) {
+        if !self.is_url_favorite(&station.url) {
+            self.favorites.push(FavoriteEntry {
+                url: station.url.clone(),
+                name: station.name.clone(),
+                source: String::new(),
+            });
+        }
+    }
+
+    fn remove_favorite(&mut self, url: &str) {
+        self.favorites.retain(|fav| fav.url != url);
     }
 
     pub fn icy_artist(&self) -> Option<String> {
@@ -863,7 +935,63 @@ impl App {
 
     fn refresh_playlists(&mut self) {
         self.playlists = scan_m3u_files(&self.config.playlists_dir).unwrap_or_else(|_| Vec::new());
+        self.prune_playlist_cache();
         self.clamp_playlist_cursor();
+    }
+
+    fn prune_playlist_cache(&mut self) {
+        let valid_keys: HashSet<String> = self
+            .playlists
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
+
+        let before_len = self.playlist_cache.entries.len();
+        self.playlist_cache
+            .entries
+            .retain(|key, _| valid_keys.contains(key));
+
+        let mut changed = self.playlist_cache.entries.len() != before_len;
+
+        // Guardrail: if cache keeps growing (very large playlists), evict the heaviest entries first.
+        while Self::estimate_playlist_cache_size_bytes(&self.playlist_cache) > PLAYLIST_CACHE_MAX_BYTES {
+            let Some((largest_key, _)) = self
+                .playlist_cache
+                .entries
+                .iter()
+                .max_by_key(|(key, entry)| Self::estimate_cache_entry_size_bytes(key, entry))
+            else {
+                break;
+            };
+
+            let largest_key = largest_key.clone();
+            if self.playlist_cache.entries.remove(&largest_key).is_none() {
+                break;
+            }
+            changed = true;
+        }
+
+        if changed && let Err(err) = self.save_playlist_cache() {
+            eprintln!("playlist cache prune failed: {err}");
+        }
+    }
+
+    fn estimate_playlist_cache_size_bytes(store: &PlaylistCacheStore) -> u64 {
+        store
+            .entries
+            .iter()
+            .map(|(key, entry)| Self::estimate_cache_entry_size_bytes(key, entry))
+            .sum()
+    }
+
+    fn estimate_cache_entry_size_bytes(key: &str, entry: &PlaylistCacheEntry) -> u64 {
+        let base = key.len() as u64 + 128;
+        let stations_bytes: u64 = entry
+            .stations
+            .iter()
+            .map(|station| station.name.len() as u64 + station.url.len() as u64 + 32)
+            .sum();
+        base + stations_bytes
     }
 
     fn clamp_playlist_cursor(&mut self) {
@@ -941,17 +1069,17 @@ impl App {
     }
 
     fn toggle_favorite(&mut self, station_index: usize) {
-        let Some(station) = self.stations.get(station_index) else {
+        let Some(station) = self.stations.get(station_index).cloned() else {
             return;
         };
 
         let url = station.url.clone();
         let name = station.name.clone();
-        let action = if self.favorite_urls.contains(&url) {
-            self.favorite_urls.remove(&url);
+        let action = if self.is_url_favorite(&url) {
+            self.remove_favorite(&url);
             "removed"
         } else {
-            self.favorite_urls.insert(url);
+            self.add_favorite(&station);
             "added"
         };
 
@@ -1001,20 +1129,18 @@ impl App {
         data_dir.join(PLAYLIST_CACHE_FILE_NAME)
     }
 
-    fn load_favorites(data_dir: &Path) -> HashSet<String> {
+    fn load_favorites(data_dir: &Path) -> Vec<FavoriteEntry> {
         let path = Self::favorites_path(data_dir);
         let Ok(raw) = fs::read_to_string(path) else {
-            return HashSet::new();
+            return Vec::new();
         };
 
-        serde_json::from_str::<Vec<String>>(&raw)
-            .map(|items| items.into_iter().collect())
-            .unwrap_or_default()
+        serde_json::from_str::<Vec<FavoriteEntry>>(&raw).unwrap_or_default()
     }
 
     fn save_favorites(&self) -> Result<(), String> {
-        let mut items: Vec<String> = self.favorite_urls.iter().cloned().collect();
-        items.sort();
+        let mut items = self.favorites.clone();
+        items.sort_by(|a, b| a.url.cmp(&b.url));
         let raw = serde_json::to_string_pretty(&items)
             .map_err(|e| format!("failed to serialize favorites: {e}"))?;
         fs::write(Self::favorites_path(&self.config.data_dir), raw)
@@ -1039,6 +1165,13 @@ impl App {
 
     fn load_playlist_cache(data_dir: &Path) -> PlaylistCacheStore {
         let path = Self::playlist_cache_path(data_dir);
+        if let Ok(meta) = fs::metadata(&path)
+            && meta.len() > PLAYLIST_CACHE_MAX_BYTES
+        {
+            let _ = fs::remove_file(&path);
+            return PlaylistCacheStore::default();
+        }
+
         let Ok(raw) = fs::read_to_string(path) else {
             return PlaylistCacheStore::default();
         };

@@ -88,7 +88,6 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let title = app.icy_title().unwrap_or_else(|| String::from("--"));
     let url = app.selected_station_url().unwrap_or("<none>");
     let m3u_name = app.current_playlist_label();
-    let history = app.history_count();
     let status = app.status.as_str();
 
     let lines = vec![
@@ -115,10 +114,6 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Span::raw(m3u_name),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("History: ", Style::default().fg(Color::Magenta)),
-            Span::raw(history.to_string()),
-        ]),
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Magenta)),
             Span::raw(status),
