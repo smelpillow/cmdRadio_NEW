@@ -28,10 +28,12 @@ pub enum Screen {
 const FAVORITES_FILE_NAME: &str = "favorites.json";
 const HISTORY_FILE_NAME: &str = "history.json";
 const PLAYLIST_CACHE_FILE_NAME: &str = "playlist_cache.json";
+const UNPLAYABLE_STATIONS_FILE_NAME: &str = "unplayable_stations.json";
 const HISTORY_LIMIT: usize = 50;
 const PAGE_STEP: usize = 12;
 const PLAYBACK_STALL_TIMEOUT_SECS: u64 = 10;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 const APP_TITLE: &str = "cmdRadio v0.3.3";
 
@@ -49,6 +51,21 @@ struct FavoriteEntry {
     name: String,
     #[serde(default)]
     source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UnplayableStation {
+    fail_count: u64,
+    last_fail_ts: u64,
+    #[serde(default)]
+    manual_block: bool,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct UnplayableStationsStore {
+    schema_version: u32,
+    threshold: u64,
+    stations: HashMap<String, UnplayableStation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +96,7 @@ enum ConnectEvent {
     Failure {
         request_id: u64,
         error: String,
+        station_url: String,
     },
 }
 
@@ -102,6 +120,7 @@ pub struct App {
     playlist_search_mode: bool,
     playlist_query: String,
     favorites: Vec<FavoriteEntry>,
+    unplayable_stations: UnplayableStationsStore,
     playlist_cache: PlaylistCacheStore,
     history: Vec<HistoryEntry>,
     connection_events: Option<Receiver<ConnectEvent>>,
@@ -121,6 +140,7 @@ impl App {
         config.ensure_directories()?;
         let favorites = Self::load_favorites(&config.data_dir);
         let history = Self::load_history(&config.data_dir);
+        let unplayable_stations = Self::load_unplayable_stations(&config.data_dir);
         let playlist_cache = Self::load_playlist_cache(&config.data_dir);
 
         let mut app = Self {
@@ -143,6 +163,7 @@ impl App {
             playlist_search_mode: false,
             playlist_query: String::new(),
             favorites,
+            unplayable_stations,
             playlist_cache,
             history,
             connection_events: None,
@@ -585,6 +606,7 @@ impl App {
                     let _ = tx.send(ConnectEvent::Failure {
                         request_id,
                         error: String::from("Invalid station index"),
+                        station_url: String::new(),
                     });
                     return;
                 };
@@ -615,6 +637,7 @@ impl App {
                                     "Playback error after retries (timeout {}s): {err}",
                                     timeout.as_secs().max(1)
                                 ),
+                                station_url: station.url.clone(),
                             });
                             return;
                         }
@@ -1019,7 +1042,11 @@ impl App {
             && entry.modified_epoch_secs == signature.0
             && entry.file_size == signature.1
         {
-            return Ok(entry.stations.clone());
+            let filtered = entry.stations.iter()
+                .filter(|s| !self.is_url_unplayable(&s.url))
+                .cloned()
+                .collect();
+            return Ok(filtered);
         }
 
         let stations = parse_m3u_file(path)?;
@@ -1036,7 +1063,10 @@ impl App {
             eprintln!("playlist cache save failed: {err}");
         }
 
-        Ok(stations)
+        let filtered = stations.into_iter()
+            .filter(|s| !self.is_url_unplayable(&s.url))
+            .collect();
+        Ok(filtered)
     }
 
     fn playlist_signature(path: &Path) -> Result<(u64, u64), String> {
@@ -1127,6 +1157,66 @@ impl App {
 
     fn playlist_cache_path(data_dir: &Path) -> PathBuf {
         data_dir.join(PLAYLIST_CACHE_FILE_NAME)
+    }
+
+    fn unplayable_stations_path(data_dir: &Path) -> PathBuf {
+        data_dir.join(UNPLAYABLE_STATIONS_FILE_NAME)
+    }
+
+    fn load_unplayable_stations(data_dir: &Path) -> UnplayableStationsStore {
+        let path = Self::unplayable_stations_path(data_dir);
+        let Ok(raw) = fs::read_to_string(path) else {
+            return UnplayableStationsStore {
+                schema_version: 1,
+                threshold: UNPLAYABLE_THRESHOLD,
+                stations: HashMap::new(),
+            };
+        };
+
+        serde_json::from_str::<UnplayableStationsStore>(&raw).unwrap_or_else(|_| UnplayableStationsStore {
+            schema_version: 1,
+            threshold: UNPLAYABLE_THRESHOLD,
+            stations: HashMap::new(),
+        })
+    }
+
+    fn save_unplayable_stations(&self) -> Result<(), String> {
+        let mut store = self.unplayable_stations.clone();
+        store.schema_version = 1;
+        store.threshold = UNPLAYABLE_THRESHOLD;
+        let raw = serde_json::to_string_pretty(&store)
+            .map_err(|e| format!("failed to serialize unplayable stations: {e}"))?;
+        fs::write(Self::unplayable_stations_path(&self.config.data_dir), raw)
+            .map_err(|e| format!("failed to write unplayable stations file: {e}"))
+    }
+
+    fn is_url_unplayable(&self, url: &str) -> bool {
+        self.unplayable_stations.stations
+            .get(url)
+            .map(|station| station.fail_count >= self.unplayable_stations.threshold || station.manual_block)
+            .unwrap_or(false)
+    }
+
+    fn record_station_failure(&mut self, url: &str) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let entry = self.unplayable_stations.stations
+            .entry(url.to_string())
+            .or_insert_with(|| UnplayableStation {
+                fail_count: 0,
+                last_fail_ts: now,
+                manual_block: false,
+            });
+
+        entry.fail_count += 1;
+        entry.last_fail_ts = now;
+
+        if let Err(err) = self.save_unplayable_stations() {
+            eprintln!("unplayable stations save failed: {err}");
+        }
     }
 
     fn load_favorites(data_dir: &Path) -> Vec<FavoriteEntry> {
@@ -1258,9 +1348,12 @@ impl App {
                     self.connection_events = None;
                     return;
                 }
-                Ok(ConnectEvent::Failure { request_id, error }) => {
+                Ok(ConnectEvent::Failure { request_id, error, station_url }) => {
                     if request_id != active_request_id {
                         continue;
+                    }
+                    if !station_url.is_empty() {
+                        self.record_station_failure(&station_url);
                     }
                     self.is_connecting = false;
                     self.active_connect_request_id = None;
