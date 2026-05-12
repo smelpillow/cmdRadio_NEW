@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
+## [0.3.4] - 2026-05-12
+
+### Added
+
+- Automatic tracking of unreliable streaming URLs to prevent repeated reconnection attempts.
+- Unplayable stations marked after 3 consecutive failures and automatically filtered from playlists.
+
+### Changed
+
+- Station selection now skips URLs that have been marked as unplayable due to repeated connection failures.
+
 
 ## [0.3.3] - 2026-05-12
 
