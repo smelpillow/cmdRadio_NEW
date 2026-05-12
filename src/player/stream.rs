@@ -1,19 +1,41 @@
 use std::io::{ErrorKind, Read, Result as IoResult, Seek, SeekFrom};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub type PlaybackProgressHandle = Arc<AtomicU64>;
+
+fn mark_progress(progress: &Option<PlaybackProgressHandle>) {
+    if let Some(progress) = progress {
+        progress.store(current_epoch_secs(), Ordering::Relaxed);
+    }
+}
+
+fn current_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 pub struct HttpStream {
     inner: Box<dyn Read + Send + Sync>,
+    progress: Option<PlaybackProgressHandle>,
 }
 
 impl HttpStream {
-    pub fn new(inner: Box<dyn Read + Send + Sync>) -> Self {
-        Self { inner }
+    pub fn new(inner: Box<dyn Read + Send + Sync>, progress: Option<PlaybackProgressHandle>) -> Self {
+        Self { inner, progress }
     }
 }
 
 impl Read for HttpStream {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-        self.inner.read(buf)
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            mark_progress(&self.progress);
+        }
+        Ok(n)
     }
 }
 
@@ -31,6 +53,7 @@ pub struct IcyStream {
     metaint: usize,
     bytes_until_metadata: usize,
     metadata: IcyMetadataHandle,
+    progress: Option<PlaybackProgressHandle>,
 }
 
 impl IcyStream {
@@ -38,12 +61,14 @@ impl IcyStream {
         inner: Box<dyn Read + Send + Sync>,
         metaint: usize,
         metadata: IcyMetadataHandle,
+        progress: Option<PlaybackProgressHandle>,
     ) -> Self {
         Self {
             inner,
             metaint,
             bytes_until_metadata: metaint,
             metadata,
+            progress,
         }
     }
 
@@ -94,6 +119,8 @@ impl Read for IcyStream {
             if n == 0 {
                 return Ok(written);
             }
+
+            mark_progress(&self.progress);
 
             written += n;
             self.bytes_until_metadata -= n;

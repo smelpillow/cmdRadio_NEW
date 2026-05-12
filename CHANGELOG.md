@@ -4,19 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
-## [Unreleased]
+## [0.3.3] - 2026-05-12
 
 ### Added
 
 - Station search now matches both station name and stream URL.
 - Favorites-only browsing toggle (`f`) in station browser and player.
+- **Architectural milestone**: Custom-built Rust audio engine (rodio + symphonia) replaces mpv dependency.
 
 ### Changed
 
 - Replaced mpv-based playback with a custom Rust audio engine (using `rodio` + `symphonia`), eliminating external media player dependencies.
-- Improved audio stability with built-in stream health monitoring and automatic failover on stall detection.
+- Improved audio stability with built-in stream health monitoring and automatic failover on stall detection (10s timeout).
 - Removed the bottom `Status` panel to use full terminal space for content.
-- Added `cmdRadio v0.3.1` branding in main screens (menu, playlists, stations, player, help, config).
+- Updated `cmdRadio v0.3.3` branding in main screens (menu, playlists, stations, player, help, config).
 
 ### Fixed
 
@@ -68,3 +69,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Added
 
 - Little changes.
+
+---
+
+## Version History
+
+This project has evolved across three major technology iterations:
+
+- **v0.1.x — PowerShell** ([original repo](https://github.com/smelpillow/cmdRadio)): Initial implementation using PowerShell and mpv audio backend.
+- **v0.2.x — Python** ([Python repo](https://github.com/smelpillow/cmdRadioPy)): Python rewrite maintaining mpv dependency for audio playback.
+- **v0.3.x — Rust** (current): Complete architectural redesign with custom-built audio engine (rodio-based), eliminating all external media player dependencies. Improved performance, cross-platform stability, and single-binary distribution.
+
+The Rust implementation (v0.3.0+) represents a fundamental shift toward portability and self-containment, requiring no system-level media player installation.

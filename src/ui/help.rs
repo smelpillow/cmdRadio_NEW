@@ -45,6 +45,7 @@ pub fn render(frame: &mut Frame<'_>, _app: &App, area: Rect) {
         "  r        Toggle shuffle",
         "  *        Toggle favorite",
         "  +/-      Volume",
+        "  Auto     Reconnects on stream stall/end (~10s)",
     ]
     .join("\n");
 

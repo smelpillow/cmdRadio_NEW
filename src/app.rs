@@ -30,6 +30,7 @@ const HISTORY_FILE_NAME: &str = "history.json";
 const PLAYLIST_CACHE_FILE_NAME: &str = "playlist_cache.json";
 const HISTORY_LIMIT: usize = 50;
 const PAGE_STEP: usize = 12;
+const PLAYBACK_STALL_TIMEOUT_SECS: u64 = 10;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 const APP_TITLE: &str = "cmdRadio v0.3.1";
 
@@ -152,6 +153,7 @@ impl App {
     pub fn on_tick(&mut self) {
         self.connect_spinner_index = (self.connect_spinner_index + 1) % SPINNER_FRAMES.len();
         self.poll_connection_events();
+        self.monitor_playback_health();
     }
 
     pub fn on_key(&mut self, code: KeyCode) -> bool {
@@ -1143,6 +1145,64 @@ impl App {
                 }
             }
         }
+    }
+
+    fn monitor_playback_health(&mut self) {
+        if self.is_connecting || self.active_connect_request_id.is_some() {
+            return;
+        }
+
+        if self.player.is_paused() || !self.player.has_active_stream() {
+            return;
+        }
+
+        if self.selected_station_index.is_none() {
+            return;
+        }
+
+        if self.player.is_stream_ended() {
+            self.trigger_auto_failover("Stream ended");
+            return;
+        }
+
+        let Some(last_progress) = self.player.last_audio_progress_epoch_secs() else {
+            return;
+        };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if now.saturating_sub(last_progress) >= PLAYBACK_STALL_TIMEOUT_SECS {
+            self.trigger_auto_failover("Audio stalled");
+        }
+    }
+
+    fn trigger_auto_failover(&mut self, reason: &str) {
+        let station_name = self
+            .selected_station_name()
+            .unwrap_or("<unknown>")
+            .to_string();
+
+        if self.full_random_mode {
+            self.status = format!(
+                "{reason} on {station_name}. Auto-reconnect: full random next pick"
+            );
+            self.start_full_random();
+            return;
+        }
+
+        if self.stations.len() <= 1 {
+            self.player.stop();
+            self.status = format!(
+                "{reason} on {station_name}. No alternative station available"
+            );
+            return;
+        }
+
+        self.status = format!("{reason} on {station_name}. Auto-reconnect to next station");
+        self.next_station();
     }
 
     fn probe_station(url: &str, timeout: Duration) -> Result<(), String> {
