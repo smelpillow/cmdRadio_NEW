@@ -8,9 +8,33 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Station search now matches both station name and stream URL.
+- Favorites-only browsing toggle (`f`) in station browser and player.
+
 ### Changed
 
+- Removed the bottom `Status` panel to use full terminal space for content.
+- Added `cmdRadio v0.3.1` branding in main screens (menu, playlists, stations, player, help, config).
+
 ### Fixed
+
+- Station list search and favorites browsing now provide clear, usable selection flow.
+
+## [0.3.1] - 2026-05-12
+
+### Added
+
+- Non-blocking station connection worker for startup/failover attempts.
+- Player progress feedback line with spinner (`| / - \\`) while trying stations.
+
+### Changed
+
+- Pressing play from station list now opens Player immediately and shows connection progress.
+- Playback state now includes `Connecting` while stream resolution is in progress.
+
+### Fixed
+
+- Removed perceived UI freeze during timeout/retry cycles on unresponsive stations.
 
 ## [0.2.0] - 2026-05-11
 

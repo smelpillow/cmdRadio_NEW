@@ -1,9 +1,13 @@
 use crossterm::event::KeyCode;
 use rand::Rng;
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,6 +28,8 @@ pub enum Screen {
 const FAVORITES_FILE_NAME: &str = "favorites.json";
 const HISTORY_FILE_NAME: &str = "history.json";
 const HISTORY_LIMIT: usize = 50;
+const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+const APP_TITLE: &str = "cmdRadio v0.3.1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -32,22 +38,52 @@ struct HistoryEntry {
     played_at_epoch_secs: u64,
 }
 
+enum ConnectEvent {
+    Attempt {
+        request_id: u64,
+        attempt: usize,
+        total: usize,
+        station_index: usize,
+        station_name: String,
+    },
+    Success {
+        request_id: u64,
+        station_index: usize,
+        recovered_from: Option<String>,
+    },
+    Failure {
+        request_id: u64,
+        error: String,
+    },
+}
+
 pub struct App {
     pub screen: Screen,
     pub status: String,
     pub shuffle: bool,
+    pub full_random_mode: bool,
     pub main_menu_index: usize,
     pub playlist_index: usize,
     pub station_index: usize,
     pub selected_station_index: Option<usize>,
     pub playlists: Vec<PathBuf>,
     pub stations: Vec<Station>,
+    pub current_playlist: Option<PathBuf>,
     pub config: AppConfig,
     previous_screen: Screen,
     station_search_mode: bool,
+    station_favorites_only: bool,
     station_query: String,
     favorite_urls: HashSet<String>,
     history: Vec<HistoryEntry>,
+    connection_events: Option<Receiver<ConnectEvent>>,
+    active_connect_request_id: Option<u64>,
+    next_connect_request_id: u64,
+    is_connecting: bool,
+    connect_attempt: usize,
+    connect_total: usize,
+    connect_station_name: String,
+    connect_spinner_index: usize,
     player: RadioPlayer,
 }
 
@@ -62,23 +98,39 @@ impl App {
             screen: Screen::MainMenu,
             status: String::from("Ready"),
             shuffle: false,
+            full_random_mode: false,
             main_menu_index: 0,
             playlist_index: 0,
             station_index: 0,
             selected_station_index: None,
             playlists: Vec::new(),
             stations: Vec::new(),
+            current_playlist: None,
             config,
             previous_screen: Screen::MainMenu,
             station_search_mode: false,
+            station_favorites_only: false,
             station_query: String::new(),
             favorite_urls,
             history,
+            connection_events: None,
+            active_connect_request_id: None,
+            next_connect_request_id: 1,
+            is_connecting: false,
+            connect_attempt: 0,
+            connect_total: 0,
+            connect_station_name: String::new(),
+            connect_spinner_index: 0,
             player: RadioPlayer::new()?,
         };
 
         app.refresh_playlists();
         Ok(app)
+    }
+
+    pub fn on_tick(&mut self) {
+        self.connect_spinner_index = (self.connect_spinner_index + 1) % SPINNER_FRAMES.len();
+        self.poll_connection_events();
     }
 
     pub fn on_key(&mut self, code: KeyCode) -> bool {
@@ -99,28 +151,30 @@ impl App {
     }
 
     fn handle_main_menu(&mut self, code: KeyCode) -> bool {
-        let menu_len = 3;
+        let menu_len = 4;
         match code {
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                 if self.main_menu_index > 0 {
                     self.main_menu_index -= 1;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
                 if self.main_menu_index + 1 < menu_len {
                     self.main_menu_index += 1;
                 }
             }
             KeyCode::Enter => match self.main_menu_index {
                 0 => {
+                    self.full_random_mode = false;
                     self.refresh_playlists();
                     self.screen = Screen::PlaylistBrowser;
                 }
-                1 => self.screen = Screen::Config,
-                2 => return true,
+                1 => self.start_full_random(),
+                2 => self.screen = Screen::Config,
+                3 => return true,
                 _ => {}
             },
-            KeyCode::Char('q') => return true,
+            KeyCode::Char('q') | KeyCode::Char('Q') => return true,
             _ => {}
         }
         false
@@ -128,17 +182,17 @@ impl App {
 
     fn handle_playlist_browser(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                 if self.playlist_index > 0 {
                     self.playlist_index -= 1;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
                 if self.playlist_index + 1 < self.playlists.len() {
                     self.playlist_index += 1;
                 }
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('r') | KeyCode::Char('R') => {
                 self.shuffle = !self.shuffle;
                 self.status = format!("Shuffle {}", if self.shuffle { "ON" } else { "OFF" });
             }
@@ -149,10 +203,13 @@ impl App {
                             if stations.is_empty() {
                                 self.status = String::from("Playlist without stations");
                             } else {
+                                self.full_random_mode = false;
                                 self.stations = stations;
                                 self.station_index = 0;
                                 self.station_search_mode = false;
+                                self.station_favorites_only = false;
                                 self.station_query.clear();
+                                self.current_playlist = Some(path.clone());
                                 self.screen = Screen::StationBrowser;
                                 self.status = format!("Loaded {}", path.display());
                             }
@@ -163,7 +220,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::MainMenu,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::MainMenu,
             _ => {}
         }
         false
@@ -176,18 +233,19 @@ impl App {
 
         let visible_len = self.filtered_station_indices().len();
         match code {
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                 if visible_len > 0 && self.station_index > 0 {
                     self.station_index -= 1;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
                 if visible_len > 0 && self.station_index + 1 < visible_len {
                     self.station_index += 1;
                 }
             }
             KeyCode::Enter => {
                 if let Some(actual_index) = self.selected_station_browser_index() {
+                    self.full_random_mode = false;
                     self.start_station(actual_index);
                 } else {
                     self.status = String::from("No stations loaded");
@@ -199,12 +257,21 @@ impl App {
                 self.station_index = 0;
                 self.status = String::from("Search mode active. Esc to exit");
             }
+            KeyCode::Char('f') | KeyCode::Char('F') => {
+                self.station_favorites_only = !self.station_favorites_only;
+                self.station_index = 0;
+                self.clamp_station_cursor();
+                self.status = format!(
+                    "Favorites filter {}",
+                    if self.station_favorites_only { "ON" } else { "OFF" }
+                );
+            }
             KeyCode::Char('*') => {
                 if let Some(actual_index) = self.selected_station_browser_index() {
                     self.toggle_favorite(actual_index);
                 }
             }
-            KeyCode::Esc | KeyCode::Char('q') => {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                 self.station_search_mode = false;
                 self.station_query.clear();
                 self.station_index = 0;
@@ -217,12 +284,12 @@ impl App {
 
     fn handle_station_search_mode(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                 if self.station_index > 0 {
                     self.station_index -= 1;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
                 let visible_len = self.filtered_station_indices().len();
                 if visible_len > 0 && self.station_index + 1 < visible_len {
                     self.station_index += 1;
@@ -230,6 +297,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(actual_index) = self.selected_station_browser_index() {
+                    self.full_random_mode = false;
                     self.start_station(actual_index);
                 } else {
                     self.status = String::from("No station matches your search");
@@ -238,6 +306,15 @@ impl App {
             KeyCode::Backspace => {
                 self.station_query.pop();
                 self.clamp_station_cursor();
+            }
+            KeyCode::Char('f') | KeyCode::Char('F') => {
+                self.station_favorites_only = !self.station_favorites_only;
+                self.station_index = 0;
+                self.clamp_station_cursor();
+                self.status = format!(
+                    "Favorites filter {}",
+                    if self.station_favorites_only { "ON" } else { "OFF" }
+                );
             }
             KeyCode::Char('*') => {
                 if let Some(actual_index) = self.selected_station_browser_index() {
@@ -272,10 +349,23 @@ impl App {
                 }
                 Err(err) => self.status = err,
             },
-            KeyCode::Char('n') | KeyCode::Right => self.next_station(),
-            KeyCode::Char('r') => {
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Right => {
+                if self.full_random_mode {
+                    self.start_full_random();
+                } else {
+                    self.next_station();
+                }
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
                 self.shuffle = !self.shuffle;
                 self.status = format!("Shuffle {}", if self.shuffle { "ON" } else { "OFF" });
+            }
+            KeyCode::Char('f') | KeyCode::Char('F') => {
+                self.station_favorites_only = !self.station_favorites_only;
+                self.status = format!(
+                    "Favorites filter {}",
+                    if self.station_favorites_only { "ON" } else { "OFF" }
+                );
             }
             KeyCode::Char('*') => {
                 if let Some(index) = self.selected_station_index {
@@ -290,7 +380,7 @@ impl App {
                 let new_vol = self.player.adjust_volume(-0.05);
                 self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
             }
-            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::StationBrowser,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::StationBrowser,
             _ => {}
         }
         false
@@ -298,7 +388,7 @@ impl App {
 
     fn handle_help(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') => {
                 self.screen = self.previous_screen;
             }
             _ => {}
@@ -308,8 +398,8 @@ impl App {
 
     fn handle_config(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::MainMenu,
-            KeyCode::Char('b') => match self.config.bootstrap_example_playlist() {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::MainMenu,
+            KeyCode::Char('b') | KeyCode::Char('B') => match self.config.bootstrap_example_playlist() {
                 Ok(p) => self.status = format!("Bootstrap copied: {}", p.display()),
                 Err(e) => self.status = format!("Bootstrap failed: {e}"),
             },
@@ -324,44 +414,127 @@ impl App {
             return;
         }
 
+        let request_id = self.next_connect_request_id;
+        self.next_connect_request_id = self.next_connect_request_id.saturating_add(1);
+        self.active_connect_request_id = Some(request_id);
+
+        let total = self.stations.len();
+        let candidate = index.min(total.saturating_sub(1));
+        self.screen = Screen::Player;
+        self.is_connecting = true;
+        self.connect_attempt = 1;
+        self.connect_total = total;
+        self.connect_spinner_index = 0;
+        self.selected_station_index = Some(candidate);
+        self.connect_station_name = self
+            .stations
+            .get(candidate)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| String::from("<unknown>"));
+        self.status = format!("Connecting 1/{}: {}", total, self.connect_station_name);
+
+        let (tx, rx) = mpsc::channel();
+        self.connection_events = Some(rx);
+        let stations = self.stations.clone();
+        let shuffle = self.shuffle;
         let timeout = Duration::from_secs(self.config.stream_start_timeout_secs.max(1));
-        let mut candidate = index.min(self.stations.len().saturating_sub(1));
-        let mut retries_left = self.stations.len().saturating_sub(1);
-        let mut last_err: Option<String> = None;
 
-        loop {
-            let Some(station) = self.stations.get(candidate).cloned() else {
-                self.status = String::from("Invalid station index");
-                return;
-            };
+        thread::spawn(move || {
+            let mut candidate = candidate;
+            let total = stations.len();
+            let mut retries_left = total.saturating_sub(1);
+            let mut last_err: Option<String> = None;
+            let mut attempt = 1;
 
-            match self.player.play_from_url(&station.url, timeout) {
-                Ok(()) => {
-                    self.selected_station_index = Some(candidate);
-                    self.screen = Screen::Player;
-                    self.record_history(&station);
-                    if let Some(prev_err) = last_err {
-                        self.status = format!("Recovered: playing {} after failover ({prev_err})", station.name);
-                    } else {
-                        self.status = format!("Playing {}", station.name);
-                    }
+            loop {
+                let Some(station) = stations.get(candidate).cloned() else {
+                    let _ = tx.send(ConnectEvent::Failure {
+                        request_id,
+                        error: String::from("Invalid station index"),
+                    });
                     return;
-                }
-                Err(err) => {
-                    last_err = Some(err.clone());
-                    if retries_left == 0 {
-                        self.status = format!(
-                            "Playback error after retries (timeout {}s): {err}",
-                            self.config.stream_start_timeout_secs.max(1)
-                        );
+                };
+
+                let _ = tx.send(ConnectEvent::Attempt {
+                    request_id,
+                    attempt,
+                    total,
+                    station_index: candidate,
+                    station_name: station.name.clone(),
+                });
+
+                match Self::probe_station(&station.url, timeout) {
+                    Ok(()) => {
+                        let _ = tx.send(ConnectEvent::Success {
+                            request_id,
+                            station_index: candidate,
+                            recovered_from: last_err,
+                        });
                         return;
                     }
+                    Err(err) => {
+                        last_err = Some(err.clone());
+                        if retries_left == 0 {
+                            let _ = tx.send(ConnectEvent::Failure {
+                                request_id,
+                                error: format!(
+                                    "Playback error after retries (timeout {}s): {err}",
+                                    timeout.as_secs().max(1)
+                                ),
+                            });
+                            return;
+                        }
 
-                    retries_left -= 1;
-                    candidate = self.next_index_from(candidate);
+                        retries_left -= 1;
+                        candidate = Self::next_candidate_index(candidate, total, shuffle);
+                        attempt += 1;
+                    }
                 }
             }
+        });
+    }
+
+    fn start_full_random(&mut self) {
+        self.refresh_playlists();
+
+        let mut playlist_indices: Vec<usize> = (0..self.playlists.len()).collect();
+        if playlist_indices.is_empty() {
+            self.status = String::from("No playlists available for full random");
+            return;
         }
+
+        let mut rng = rand::rng();
+        playlist_indices.shuffle(&mut rng);
+
+        for playlist_index in playlist_indices {
+            let Some(path) = self.playlists.get(playlist_index).cloned() else {
+                continue;
+            };
+
+            let stations = match parse_m3u_file(&path) {
+                Ok(stations) if !stations.is_empty() => stations,
+                _ => continue,
+            };
+
+            let station_index = rng.random_range(0..stations.len());
+            let playlist_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("<unknown>");
+
+            self.full_random_mode = true;
+            self.stations = stations;
+            self.station_index = 0;
+            self.station_search_mode = false;
+            self.station_favorites_only = false;
+            self.station_query.clear();
+            self.current_playlist = Some(path.clone());
+            self.status = format!("Full random from playlist: {playlist_name}");
+            self.start_station(station_index);
+            return;
+        }
+
+        self.status = String::from("No valid stations found across playlists for full random");
     }
 
     fn next_station(&mut self) {
@@ -409,13 +582,29 @@ impl App {
     }
 
     pub fn playback_state_label(&self) -> &'static str {
-        if !self.player.has_active_stream() {
+        if self.is_connecting {
+            "Connecting"
+        } else if !self.player.has_active_stream() {
             "Stopped"
         } else if self.player.is_paused() {
             "Paused"
         } else {
             "Playing"
         }
+    }
+
+    pub fn connection_progress_label(&self) -> Option<String> {
+        if !self.is_connecting {
+            return None;
+        }
+
+        Some(format!(
+            "{} Trying {}/{}: {}",
+            SPINNER_FRAMES[self.connect_spinner_index],
+            self.connect_attempt.max(1),
+            self.connect_total.max(1),
+            self.connect_station_name
+        ))
     }
 
     pub fn volume_percent(&self) -> u8 {
@@ -426,6 +615,18 @@ impl App {
         if self.shuffle { "ON" } else { "OFF" }
     }
 
+    pub fn full_random_label(&self) -> &'static str {
+        if self.full_random_mode { "ON" } else { "OFF" }
+    }
+
+    pub fn current_playlist_label(&self) -> &str {
+        self.current_playlist
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("<none>")
+    }
+
     pub fn is_station_search_mode(&self) -> bool {
         self.station_search_mode
     }
@@ -434,18 +635,33 @@ impl App {
         &self.station_query
     }
 
-    pub fn filtered_station_indices(&self) -> Vec<usize> {
-        if self.station_query.trim().is_empty() {
-            return (0..self.stations.len()).collect();
-        }
+    pub fn station_favorites_only(&self) -> bool {
+        self.station_favorites_only
+    }
 
-        let query = self.station_query.to_ascii_lowercase();
+    pub fn app_title(&self) -> &'static str {
+        APP_TITLE
+    }
+
+    pub fn filtered_station_indices(&self) -> Vec<usize> {
+        let query = self.station_query.trim().to_ascii_lowercase();
+        let has_query = !query.is_empty();
+
         self.stations
             .iter()
             .enumerate()
             .filter_map(|(index, station)| {
+                if self.station_favorites_only && !self.favorite_urls.contains(&station.url) {
+                    return None;
+                }
+
+                if !has_query {
+                    return Some(index);
+                }
+
                 let name = station.name.to_ascii_lowercase();
-                if name.contains(&query) {
+                let url = station.url.to_ascii_lowercase();
+                if name.contains(&query) || url.contains(&query) {
                     Some(index)
                 } else {
                     None
@@ -592,5 +808,141 @@ impl App {
             .map_err(|e| format!("failed to serialize history: {e}"))?;
         fs::write(Self::history_path(&self.config.data_dir), raw)
             .map_err(|e| format!("failed to write history file: {e}"))
+    }
+
+    fn poll_connection_events(&mut self) {
+        let Some(active_request_id) = self.active_connect_request_id else {
+            return;
+        };
+        if self.connection_events.is_none() {
+            return;
+        }
+
+        loop {
+            let event = match self.connection_events.as_ref() {
+                Some(rx) => rx.try_recv(),
+                None => return,
+            };
+
+            match event {
+                Ok(ConnectEvent::Attempt {
+                    request_id,
+                    attempt,
+                    total,
+                    station_index,
+                    station_name,
+                }) => {
+                    if request_id != active_request_id {
+                        continue;
+                    }
+                    self.is_connecting = true;
+                    self.connect_attempt = attempt;
+                    self.connect_total = total;
+                    self.connect_station_name = station_name.clone();
+                    self.selected_station_index = Some(station_index);
+                    self.status = format!("Connecting {attempt}/{total}: {station_name}");
+                }
+                Ok(ConnectEvent::Success {
+                    request_id,
+                    station_index,
+                    recovered_from,
+                }) => {
+                    if request_id != active_request_id {
+                        continue;
+                    }
+
+                    self.is_connecting = false;
+                    self.active_connect_request_id = None;
+                    let timeout = Duration::from_secs(self.config.stream_start_timeout_secs.max(1));
+
+                    let Some(station) = self.stations.get(station_index).cloned() else {
+                        self.status = String::from("Resolved station is no longer available");
+                        self.connection_events = None;
+                        return;
+                    };
+
+                    match self.player.play_from_url(&station.url, timeout) {
+                        Ok(()) => {
+                            self.selected_station_index = Some(station_index);
+                            self.record_history(&station);
+                            if let Some(prev_err) = recovered_from {
+                                self.status = format!(
+                                    "Recovered: playing {} after failover ({prev_err})",
+                                    station.name
+                                );
+                            } else {
+                                self.status = format!("Playing {}", station.name);
+                            }
+                        }
+                        Err(err) => {
+                            self.status = format!("Playback start failed after connect: {err}");
+                        }
+                    }
+
+                    self.connection_events = None;
+                    return;
+                }
+                Ok(ConnectEvent::Failure { request_id, error }) => {
+                    if request_id != active_request_id {
+                        continue;
+                    }
+                    self.is_connecting = false;
+                    self.active_connect_request_id = None;
+                    self.connection_events = None;
+                    self.status = error;
+                    return;
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    self.is_connecting = false;
+                    self.active_connect_request_id = None;
+                    self.connection_events = None;
+                    self.status = String::from("Connection worker disconnected");
+                    return;
+                }
+            }
+        }
+    }
+
+    fn probe_station(url: &str, timeout: Duration) -> Result<(), String> {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(timeout)
+            .timeout_read(timeout)
+            .timeout_write(timeout)
+            .build();
+
+        let response = agent
+            .get(url)
+            .set("Icy-MetaData", "1")
+            .call()
+            .map_err(|e| format!("http request failed: {e}"))?;
+
+        let mut reader = response.into_reader();
+        let mut probe = [0_u8; 1];
+        reader
+            .read_exact(&mut probe)
+            .map_err(|e| format!("stream probe failed: {e}"))?;
+
+        Ok(())
+    }
+
+    fn next_candidate_index(current: usize, len: usize, shuffle: bool) -> usize {
+        if len == 0 {
+            return 0;
+        }
+
+        if shuffle {
+            if len == 1 {
+                return 0;
+            }
+            let mut rng = rand::rng();
+            let mut candidate = rng.random_range(0..len);
+            if candidate == current {
+                candidate = (candidate + 1) % len;
+            }
+            candidate
+        } else {
+            (current + 1) % len
+        }
     }
 }

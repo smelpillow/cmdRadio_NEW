@@ -6,7 +6,11 @@ Terminal-based online radio player in Rust with M3U playlist support.
 
 - Main menu and terminal UI navigation.
 - Playlist browser for `.m3u` and `.m3u8` files.
-- Player screen with playback state (`Playing` / `Paused` / `Stopped`).
+- Full random mode from main menu (random M3U + random station).
+- Station search by name and URL.
+- Favorites support with optional favorites-only filter.
+- Player screen with playback state (`Connecting` / `Playing` / `Paused` / `Stopped`).
+- Non-blocking station connection attempts with live progress in Player.
 - Player screen with visible random mode indicator (`ON` / `OFF`).
 - Volume controls from keyboard with live percentage display.
 - ICY metadata display (`artist` and `title`) when provided by the stream.
@@ -43,10 +47,15 @@ Then open Configuration and press `b` once to copy the sample playlist into your
 
 ## Keyboard Controls
 
+All alphabetic shortcuts are case-insensitive (`n`/`N`, `q`/`Q`, etc.).
+
 - `j` / `k` or arrow keys: navigate
 - `Enter`: select
+- `/`: search in station list (name/url)
+- `f`: toggle favorites-only filter in stations/player
+- `*`: toggle favorite station
 - `Space`: play/pause
-- `n` or right arrow: next station
+- `n` or right arrow: next station (in Full Random mode: next random M3U + station)
 - `r`: toggle shuffle
 - `+` / `=`: volume up (+5%, max 100%)
 - `-` / `_`: volume down (-5%, min 0%)

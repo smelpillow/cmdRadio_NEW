@@ -28,7 +28,8 @@ fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
 
     let title = format!(
-        "Playlists ({}) - Enter open, r shuffle, ? help, q back",
+        "{} - Playlists ({}) - Enter open, r shuffle, ? help, q back",
+        app.app_title(),
         app.config.playlists_dir.display()
     );
     let list = List::new(items)
@@ -60,15 +61,30 @@ fn render_stations(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .collect()
     };
 
-    let mut title = String::from("Stations - Enter play, / search, * favorite, ? help, q back");
+    let mut title = format!(
+        "{} - Stations - Enter play, / search, f favorites, * favorite, ? help, q back",
+        app.app_title()
+    );
     if app.is_station_search_mode() {
-        title = format!("Stations Search [{}] - type to filter, Esc exit", app.station_search_query());
-    } else if !app.station_search_query().is_empty() {
         title = format!(
-            "Stations Filter [{}] - Enter play, / new search, * favorite",
+            "{} - Stations Search [{}] - type to filter (name/url), f favorites, Esc exit",
+            app.app_title(),
             app.station_search_query()
         );
+    } else if !app.station_search_query().is_empty() {
+        title = format!(
+            "{} - Stations Filter [{}] - Enter play, / new search, f favorites, * favorite",
+            app.app_title(),
+            app.station_search_query()
+        );
+    } else if app.station_favorites_only() {
+        title = format!(
+            "{} - Stations [Favorites only] - Enter play, / search, f favorites, * favorite",
+            app.app_title()
+        );
     }
+
+    let has_items = !items.is_empty();
 
     let list = List::new(items)
         .block(Block::default().title(title).borders(Borders::ALL))
@@ -76,7 +92,7 @@ fn render_stations(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .highlight_symbol(" > ");
 
     let mut state = ListState::default();
-    if !items.is_empty() {
+    if has_items {
         state.select(Some(app.station_index));
     }
     frame.render_stateful_widget(list, area, &mut state);

@@ -8,6 +8,7 @@ use crate::app::App;
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let items = vec![
         ListItem::new("Browse M3U playlists"),
+        ListItem::new("Full random (M3U + station)"),
         ListItem::new("Configuration"),
         ListItem::new("Exit"),
     ];
@@ -15,7 +16,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title("cmdRadio - Main Menu (? help)")
+                .title(format!("{} - Main Menu (? help)", app.app_title()))
                 .borders(Borders::ALL),
         )
         .highlight_style(Style::default().add_modifier(Modifier::BOLD))

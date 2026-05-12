@@ -61,6 +61,8 @@ fn run() -> Result<(), String> {
     let mut should_quit = false;
 
     while !should_quit {
+        app.on_tick();
+
         terminal
             .draw(|frame| ui::draw(frame, &app))
             .map_err(|e| format!("draw failed: {e}"))?;
