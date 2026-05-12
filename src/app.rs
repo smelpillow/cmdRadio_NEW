@@ -2,7 +2,7 @@ use crossterm::event::KeyCode;
 use rand::Rng;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -27,7 +27,9 @@ pub enum Screen {
 
 const FAVORITES_FILE_NAME: &str = "favorites.json";
 const HISTORY_FILE_NAME: &str = "history.json";
+const PLAYLIST_CACHE_FILE_NAME: &str = "playlist_cache.json";
 const HISTORY_LIMIT: usize = 50;
+const PAGE_STEP: usize = 12;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 const APP_TITLE: &str = "cmdRadio v0.3.1";
 
@@ -36,6 +38,18 @@ struct HistoryEntry {
     name: String,
     url: String,
     played_at_epoch_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PlaylistCacheEntry {
+    modified_epoch_secs: u64,
+    file_size: u64,
+    stations: Vec<Station>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct PlaylistCacheStore {
+    entries: HashMap<String, PlaylistCacheEntry>,
 }
 
 enum ConnectEvent {
@@ -74,7 +88,10 @@ pub struct App {
     station_search_mode: bool,
     station_favorites_only: bool,
     station_query: String,
+    playlist_search_mode: bool,
+    playlist_query: String,
     favorite_urls: HashSet<String>,
+    playlist_cache: PlaylistCacheStore,
     history: Vec<HistoryEntry>,
     connection_events: Option<Receiver<ConnectEvent>>,
     active_connect_request_id: Option<u64>,
@@ -93,6 +110,7 @@ impl App {
         config.ensure_directories()?;
         let favorite_urls = Self::load_favorites(&config.data_dir);
         let history = Self::load_history(&config.data_dir);
+        let playlist_cache = Self::load_playlist_cache(&config.data_dir);
 
         let mut app = Self {
             screen: Screen::MainMenu,
@@ -111,7 +129,10 @@ impl App {
             station_search_mode: false,
             station_favorites_only: false,
             station_query: String::new(),
+            playlist_search_mode: false,
+            playlist_query: String::new(),
             favorite_urls,
+            playlist_cache,
             history,
             connection_events: None,
             active_connect_request_id: None,
@@ -166,7 +187,9 @@ impl App {
             KeyCode::Enter => match self.main_menu_index {
                 0 => {
                     self.full_random_mode = false;
-                    self.refresh_playlists();
+                    self.playlist_search_mode = false;
+                    self.playlist_query.clear();
+                    self.clamp_playlist_cursor();
                     self.screen = Screen::PlaylistBrowser;
                 }
                 1 => self.start_full_random(),
@@ -181,6 +204,79 @@ impl App {
     }
 
     fn handle_playlist_browser(&mut self, code: KeyCode) -> bool {
+        if self.playlist_search_mode {
+            return self.handle_playlist_search_mode(code);
+        }
+
+        let visible_len = self.filtered_playlist_indices().len();
+        match code {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if visible_len > 0 && self.playlist_index > 0 {
+                    self.playlist_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if visible_len > 0 && self.playlist_index + 1 < visible_len {
+                    self.playlist_index += 1;
+                }
+            }
+            KeyCode::PageUp => {
+                self.playlist_index = self.playlist_index.saturating_sub(PAGE_STEP);
+            }
+            KeyCode::PageDown => {
+                if visible_len > 0 {
+                    self.playlist_index = (self.playlist_index + PAGE_STEP).min(visible_len - 1);
+                }
+            }
+            KeyCode::Char('/') => {
+                self.playlist_search_mode = true;
+                self.playlist_query.clear();
+                self.playlist_index = 0;
+                self.status = String::from("Playlist search mode active. Esc to exit");
+            }
+            KeyCode::Char('u') | KeyCode::Char('U') => {
+                self.refresh_playlists();
+                self.clamp_playlist_cursor();
+                self.status = format!("Playlists refreshed: {} files", self.playlists.len());
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.shuffle = !self.shuffle;
+                self.status = format!("Shuffle {}", if self.shuffle { "ON" } else { "OFF" });
+            }
+            KeyCode::Enter => {
+                if let Some(actual_index) = self.selected_playlist_browser_index()
+                    && let Some(path) = self.playlists.get(actual_index).cloned()
+                {
+                        match self.load_stations_for_playlist(&path) {
+                            Ok(stations) => {
+                                if stations.is_empty() {
+                                    self.status = String::from("Playlist without stations");
+                                } else {
+                                    self.full_random_mode = false;
+                                    self.stations = stations;
+                                    self.station_index = 0;
+                                    self.station_search_mode = false;
+                                    self.station_favorites_only = false;
+                                    self.station_query.clear();
+                                    self.playlist_search_mode = false;
+                                    self.current_playlist = Some(path.clone());
+                                    self.screen = Screen::StationBrowser;
+                                    self.status = format!("Loaded {}", path.display());
+                                }
+                            }
+                            Err(err) => {
+                                self.status = format!("Cannot parse playlist: {err}");
+                            }
+                        }
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::MainMenu,
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_playlist_search_mode(&mut self, code: KeyCode) -> bool {
         match code {
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                 if self.playlist_index > 0 {
@@ -188,41 +284,66 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-                if self.playlist_index + 1 < self.playlists.len() {
+                let visible_len = self.filtered_playlist_indices().len();
+                if visible_len > 0 && self.playlist_index + 1 < visible_len {
                     self.playlist_index += 1;
                 }
             }
-            KeyCode::Char('r') | KeyCode::Char('R') => {
-                self.shuffle = !self.shuffle;
-                self.status = format!("Shuffle {}", if self.shuffle { "ON" } else { "OFF" });
+            KeyCode::PageUp => {
+                self.playlist_index = self.playlist_index.saturating_sub(PAGE_STEP);
             }
-            KeyCode::Enter => {
-                if let Some(path) = self.playlists.get(self.playlist_index).cloned() {
-                    match parse_m3u_file(&path) {
-                        Ok(stations) => {
-                            if stations.is_empty() {
-                                self.status = String::from("Playlist without stations");
-                            } else {
-                                self.full_random_mode = false;
-                                self.stations = stations;
-                                self.station_index = 0;
-                                self.station_search_mode = false;
-                                self.station_favorites_only = false;
-                                self.station_query.clear();
-                                self.current_playlist = Some(path.clone());
-                                self.screen = Screen::StationBrowser;
-                                self.status = format!("Loaded {}", path.display());
-                            }
-                        }
-                        Err(err) => {
-                            self.status = format!("Cannot parse playlist: {err}");
-                        }
-                    }
+            KeyCode::PageDown => {
+                let visible_len = self.filtered_playlist_indices().len();
+                if visible_len > 0 {
+                    self.playlist_index = (self.playlist_index + PAGE_STEP).min(visible_len - 1);
                 }
             }
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::MainMenu,
+            KeyCode::Enter => {
+                if let Some(actual_index) = self.selected_playlist_browser_index()
+                    && let Some(path) = self.playlists.get(actual_index).cloned()
+                {
+                        match self.load_stations_for_playlist(&path) {
+                            Ok(stations) => {
+                                if stations.is_empty() {
+                                    self.status = String::from("Playlist without stations");
+                                } else {
+                                    self.full_random_mode = false;
+                                    self.stations = stations;
+                                    self.station_index = 0;
+                                    self.station_search_mode = false;
+                                    self.station_favorites_only = false;
+                                    self.station_query.clear();
+                                    self.playlist_search_mode = false;
+                                    self.current_playlist = Some(path.clone());
+                                    self.screen = Screen::StationBrowser;
+                                    self.status = format!("Loaded {}", path.display());
+                                }
+                            }
+                            Err(err) => {
+                                self.status = format!("Cannot parse playlist: {err}");
+                            }
+                        }
+                } else {
+                    self.status = String::from("No playlist matches your search");
+                }
+            }
+            KeyCode::Backspace => {
+                self.playlist_query.pop();
+                self.clamp_playlist_cursor();
+            }
+            KeyCode::Char(ch) if !ch.is_control() => {
+                self.playlist_query.push(ch);
+                self.playlist_index = 0;
+            }
+            KeyCode::Esc => {
+                self.playlist_search_mode = false;
+                self.playlist_query.clear();
+                self.playlist_index = 0;
+                self.status = String::from("Playlist search mode closed");
+            }
             _ => {}
         }
+
         false
     }
 
@@ -511,7 +632,7 @@ impl App {
                 continue;
             };
 
-            let stations = match parse_m3u_file(&path) {
+            let stations = match self.load_stations_for_playlist(&path) {
                 Ok(stations) if !stations.is_empty() => stations,
                 _ => continue,
             };
@@ -639,6 +760,51 @@ impl App {
         self.station_favorites_only
     }
 
+    pub fn is_playlist_search_mode(&self) -> bool {
+        self.playlist_search_mode
+    }
+
+    pub fn playlist_search_query(&self) -> &str {
+        &self.playlist_query
+    }
+
+    pub fn filtered_playlist_indices(&self) -> Vec<usize> {
+        let query = self.playlist_query.trim().to_ascii_lowercase();
+        let has_query = !query.is_empty();
+
+        self.playlists
+            .iter()
+            .enumerate()
+            .filter_map(|(index, path)| {
+                if !has_query {
+                    return Some(index);
+                }
+
+                let path_text = path.to_string_lossy().to_ascii_lowercase();
+                let file_text = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+
+                if path_text.contains(&query) || file_text.contains(&query) {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn playlist_station_count_hint(&self, playlist_index: usize) -> Option<usize> {
+        let path = self.playlists.get(playlist_index)?;
+        let key = path.to_string_lossy().to_string();
+        self.playlist_cache
+            .entries
+            .get(&key)
+            .map(|entry| entry.stations.len())
+    }
+
     pub fn app_title(&self) -> &'static str {
         APP_TITLE
     }
@@ -695,9 +861,64 @@ impl App {
 
     fn refresh_playlists(&mut self) {
         self.playlists = scan_m3u_files(&self.config.playlists_dir).unwrap_or_else(|_| Vec::new());
-        if self.playlist_index >= self.playlists.len() {
+        self.clamp_playlist_cursor();
+    }
+
+    fn clamp_playlist_cursor(&mut self) {
+        let visible_len = self.filtered_playlist_indices().len();
+        if visible_len == 0 {
             self.playlist_index = 0;
+            return;
         }
+
+        if self.playlist_index >= visible_len {
+            self.playlist_index = visible_len - 1;
+        }
+    }
+
+    fn selected_playlist_browser_index(&self) -> Option<usize> {
+        let visible = self.filtered_playlist_indices();
+        visible.get(self.playlist_index).copied()
+    }
+
+    fn load_stations_for_playlist(&mut self, path: &Path) -> Result<Vec<Station>, String> {
+        let signature = Self::playlist_signature(path)?;
+        let key = path.to_string_lossy().to_string();
+
+        if let Some(entry) = self.playlist_cache.entries.get(&key)
+            && entry.modified_epoch_secs == signature.0
+            && entry.file_size == signature.1
+        {
+            return Ok(entry.stations.clone());
+        }
+
+        let stations = parse_m3u_file(path)?;
+        self.playlist_cache.entries.insert(
+            key,
+            PlaylistCacheEntry {
+                modified_epoch_secs: signature.0,
+                file_size: signature.1,
+                stations: stations.clone(),
+            },
+        );
+
+        if let Err(err) = self.save_playlist_cache() {
+            eprintln!("playlist cache save failed: {err}");
+        }
+
+        Ok(stations)
+    }
+
+    fn playlist_signature(path: &Path) -> Result<(u64, u64), String> {
+        let meta = fs::metadata(path)
+            .map_err(|e| format!("failed to read metadata {}: {e}", path.display()))?;
+        let modified_epoch_secs = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Ok((modified_epoch_secs, meta.len()))
     }
 
     fn clamp_station_cursor(&mut self) {
@@ -774,6 +995,10 @@ impl App {
         data_dir.join(HISTORY_FILE_NAME)
     }
 
+    fn playlist_cache_path(data_dir: &Path) -> PathBuf {
+        data_dir.join(PLAYLIST_CACHE_FILE_NAME)
+    }
+
     fn load_favorites(data_dir: &Path) -> HashSet<String> {
         let path = Self::favorites_path(data_dir);
         let Ok(raw) = fs::read_to_string(path) else {
@@ -808,6 +1033,22 @@ impl App {
             .map_err(|e| format!("failed to serialize history: {e}"))?;
         fs::write(Self::history_path(&self.config.data_dir), raw)
             .map_err(|e| format!("failed to write history file: {e}"))
+    }
+
+    fn load_playlist_cache(data_dir: &Path) -> PlaylistCacheStore {
+        let path = Self::playlist_cache_path(data_dir);
+        let Ok(raw) = fs::read_to_string(path) else {
+            return PlaylistCacheStore::default();
+        };
+
+        serde_json::from_str::<PlaylistCacheStore>(&raw).unwrap_or_default()
+    }
+
+    fn save_playlist_cache(&self) -> Result<(), String> {
+        let raw = serde_json::to_string(&self.playlist_cache)
+            .map_err(|e| format!("failed to serialize playlist cache: {e}"))?;
+        fs::write(Self::playlist_cache_path(&self.config.data_dir), raw)
+            .map_err(|e| format!("failed to write playlist cache file: {e}"))
     }
 
     fn poll_connection_events(&mut self) {

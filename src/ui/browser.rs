@@ -2,7 +2,7 @@ use std::path::Path;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
 use crate::app::{App, Screen};
@@ -16,29 +16,60 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let filtered = app.filtered_playlist_indices();
     let items: Vec<ListItem<'_>> = if app.playlists.is_empty() {
         vec![ListItem::new(
             "No .m3u/.m3u8 files found in playlists directory",
         )]
+    } else if filtered.is_empty() {
+        vec![ListItem::new("No playlist matches current search")]
     } else {
-        app.playlists
-            .iter()
-            .map(|path| ListItem::new(file_name(path)))
+        filtered
+            .into_iter()
+            .filter_map(|i| app.playlists.get(i).map(|path| (i, path)))
+            .map(|(i, path)| {
+                let count_hint = app
+                    .playlist_station_count_hint(i)
+                    .map(|n| format!(" [{n} st]"))
+                    .unwrap_or_default();
+                ListItem::new(format!("{}{}", file_name(path), count_hint))
+            })
             .collect()
     };
 
-    let title = format!(
-        "{} - Playlists ({}) - Enter open, r shuffle, ? help, q back",
+    let mut title = format!(
+        "{} - Playlists [{}] - Enter open, / search, PgUp/PgDn page, u refresh, q back",
         app.app_title(),
         app.config.playlists_dir.display()
     );
+    if app.is_playlist_search_mode() {
+        title = format!(
+            "{} - Playlists Search [{}] - type to filter by file/path, PgUp/PgDn page, Esc exit",
+            app.app_title(),
+            app.playlist_search_query()
+        );
+    } else if !app.playlist_search_query().is_empty() {
+        title = format!(
+            "{} - Playlists Filter [{}] - Enter open, / new search, PgUp/PgDn page",
+            app.app_title(),
+            app.playlist_search_query()
+        );
+    }
+
+    let has_items = !items.is_empty();
+
     let list = List::new(items)
         .block(Block::default().title(title).borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
-        .highlight_symbol(" > ");
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(" >> ");
 
     let mut state = ListState::default();
-    if !app.playlists.is_empty() {
+    if has_items {
         state.select(Some(app.playlist_index));
     }
     frame.render_stateful_widget(list, area, &mut state);
