@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
+
+## [0.3.5] - 2026-05-13
+
+### Fixed
+
+- Statically link MSVC C runtime (`+crt-static`) to eliminate `VCRUNTIME140.dll` dependency on clean Windows installs.
+
 ## [0.3.4] - 2026-05-12
 
 ### Added
