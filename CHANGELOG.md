@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.3.6] - 2026-05-19
+
+### Added
+- Persistent volume setting across application restarts
+- Stream quality display (bitrate and format) in Player view
+- Vertical scrolling in Help screen (j/k, arrows, PgUp/PgDn, Home, End)
+- Help hint in Player screen for discoverability
+- Explicit Ctrl+C handling for hard-exit support
+
+### Changed
+- Player view layout rebalanced to 30/70 split (left panel compacted, right panel expanded)
+- Title moved from right panel to left panel for better visual hierarchy
+- Control instructions now only appear in Help screen (cleaner Player view)
+- Metadata reads non-blocking (try_lock instead of blocking lock)
+- ICY metadata parsing moved outside critical section to reduce lock contention
+
+### Fixed
+- UI freezes when changing stations during playback (lock contention)
+- Help screen overflow on small terminals (vertical scrolling)
+
 ## [0.3.5] - 2026-05-13
 
 ### Fixed
