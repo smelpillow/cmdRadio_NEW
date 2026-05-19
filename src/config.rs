@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub playlists_dir: PathBuf,
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
+    #[serde(default = "default_volume")]
     pub volume: f32,
     #[serde(default = "default_stream_start_timeout_secs")]
     pub stream_start_timeout_secs: u64,
@@ -44,7 +45,7 @@ impl AppConfig {
                 playlists_dir: paths.playlists_dir.clone(),
                 data_dir: paths.data_dir.clone(),
                 cache_dir: paths.cache_dir.clone(),
-                volume: 1.0,
+                volume: default_volume(),
                 stream_start_timeout_secs: default_stream_start_timeout_secs(),
             };
             cfg.save()?;
@@ -112,6 +113,10 @@ impl AppConfig {
 
 fn default_stream_start_timeout_secs() -> u64 {
     8
+}
+
+fn default_volume() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone)]

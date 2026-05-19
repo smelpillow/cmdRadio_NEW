@@ -15,6 +15,8 @@ pub struct RadioPlayer {
     sink: Option<Sink>,
     paused: bool,
     volume: f32,
+    stream_bitrate_kbps: Option<u32>,
+    stream_content_type: Option<String>,
     icy_metadata: Option<IcyMetadataHandle>,
     playback_progress: Option<PlaybackProgressHandle>,
 }
@@ -27,6 +29,8 @@ impl RadioPlayer {
             sink: None,
             paused: false,
             volume: 1.0,
+            stream_bitrate_kbps: None,
+            stream_content_type: None,
             icy_metadata: None,
             playback_progress: None,
         })
@@ -51,6 +55,10 @@ impl RadioPlayer {
         let icy_metaint = response
             .header("icy-metaint")
             .and_then(|v| v.trim().parse::<usize>().ok());
+        self.stream_bitrate_kbps = response
+            .header("icy-br")
+            .and_then(|v| v.trim().parse::<u32>().ok());
+        self.stream_content_type = response.header("content-type").map(|v| v.trim().to_string());
 
         let metadata_handle = Arc::new(Mutex::new(None));
         let playback_progress = Arc::new(AtomicU64::new(current_epoch_secs()));
@@ -114,6 +122,8 @@ impl RadioPlayer {
         self.paused = false;
         self.icy_metadata = None;
         self.playback_progress = None;
+        self.stream_bitrate_kbps = None;
+        self.stream_content_type = None;
     }
 
     pub fn is_paused(&self) -> bool {
@@ -146,11 +156,26 @@ impl RadioPlayer {
         self.volume
     }
 
+    pub fn set_volume(&mut self, volume: f32) -> f32 {
+        self.volume = volume.clamp(0.0, 1.0);
+        if let Some(sink) = &self.sink {
+            sink.set_volume(self.volume);
+        }
+        self.volume
+    }
+
+    pub fn stream_bitrate_kbps(&self) -> Option<u32> {
+        self.stream_bitrate_kbps
+    }
+
+    pub fn stream_content_type(&self) -> Option<&str> {
+        self.stream_content_type.as_deref()
+    }
+
     pub fn current_metadata(&self) -> Option<IcyMetadata> {
-        self.icy_metadata
-            .as_ref()
-            .map(|h| h.lock().unwrap_or_else(|e| e.into_inner()))
-            .and_then(|m| m.clone())
+        let handle = self.icy_metadata.as_ref()?;
+        let guard = handle.try_lock().ok()?;
+        guard.clone()
     }
 
     fn ensure_output(&mut self) -> Result<(), String> {

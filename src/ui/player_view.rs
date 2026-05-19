@@ -7,10 +7,10 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app::App;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    // Two-column layout: 50/50 split
+    // Two-column layout: 30/70 split
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(area);
 
     render_left_column(frame, app, chunks[0]);
@@ -77,15 +77,22 @@ fn render_left_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
     ]));
 
     let widget = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM | Borders::TOP));
+        .block(
+            Block::default()
+                .title(format!("{} - Player", app.app_title()))
+                .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM | Borders::TOP),
+        );
 
     frame.render_widget(widget, area);
 }
 
 fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let station_name = app.selected_station_name().unwrap_or("<none>");
-    let artist = app.icy_artist().unwrap_or_else(|| String::from("--"));
-    let title = app.icy_title().unwrap_or_else(|| String::from("--"));
+    let (artist, title) = app.icy_artist_title();
+    let artist = artist.unwrap_or_else(|| String::from("--"));
+    let title = title.unwrap_or_else(|| String::from("--"));
+    let bitrate = app.stream_bitrate_label();
+    let human_quality = app.stream_human_quality_label();
     let url = app.selected_station_url().unwrap_or("<none>");
     let m3u_name = app.current_playlist_label();
     let status = app.status.as_str();
@@ -106,6 +113,15 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]),
         Line::from(""),
         Line::from(vec![
+            Span::styled("Bitrate: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(bitrate),
+        ]),
+        Line::from(vec![
+            Span::styled("Format: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(human_quality),
+        ]),
+        Line::from(""),
+        Line::from(vec![
             Span::styled("URL: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             Span::raw(url),
         ]),
@@ -118,23 +134,14 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Span::styled("Status: ", Style::default().fg(Color::Magenta)),
             Span::raw(status),
         ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Controls:",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )),
-        Line::from("Space   : Play/Pause"),
-        Line::from("n       : Next station"),
-        Line::from("r       : Toggle shuffle"),
-        Line::from("f       : Toggle favs-only"),
-        Line::from("*       : Mark favorite"),
-        Line::from("+/-     : Volume +/- 5%"),
-        Line::from("?       : Help"),
-        Line::from("q       : Back"),
+        Line::from(vec![
+            Span::styled("Help: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::raw("press ?"),
+        ]),
     ];
 
     let widget = Paragraph::new(lines)
-        .block(Block::default().title(format!("{} - Player", app.app_title())).borders(Borders::ALL));
+        .block(Block::default().title("Now Playing").borders(Borders::ALL));
 
     frame.render_widget(widget, area);
 }

@@ -7,7 +7,7 @@ mod ui;
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -71,7 +71,11 @@ fn run() -> Result<(), String> {
             && let Event::Key(key) = event::read().map_err(|e| format!("event read failed: {e}"))?
             && key.kind == KeyEventKind::Press
         {
-            should_quit = app.on_key(key.code);
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                should_quit = true;
+            } else {
+                should_quit = app.on_key(key.code);
+            }
         }
     }
 

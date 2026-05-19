@@ -84,8 +84,10 @@ impl IcyStream {
         let mut block = vec![0_u8; metadata_len];
         self.inner.read_exact(&mut block)?;
 
+        let parsed = parse_icy_metadata(&block);
+
         if let Ok(mut guard) = self.metadata.lock() {
-            *guard = parse_icy_metadata(&block);
+            *guard = parsed;
         }
 
         Ok(())

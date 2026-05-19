@@ -8,6 +8,8 @@ pub fn render(frame: &mut Frame<'_>, _app: &App, area: Rect) {
     let body = [
         "Global",
         "  ?        Open/close help",
+        "  j/k      Scroll help",
+        "  PgUp/Dn  Page help up/down",
         "  q / Esc  Back (or Exit from main menu)",
         "  Note     Letter shortcuts are case-insensitive",
         "",
@@ -54,6 +56,6 @@ pub fn render(frame: &mut Frame<'_>, _app: &App, area: Rect) {
         Block::default()
             .title(format!("{} - Help", _app.app_title()))
             .borders(Borders::ALL),
-    );
+    ).scroll((_app.help_scroll(), 0));
     frame.render_widget(paragraph, area);
 }

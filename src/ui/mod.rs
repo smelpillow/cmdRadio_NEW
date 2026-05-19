@@ -22,10 +22,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 
 fn render_config(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
     let body = format!(
-        "Config file policy: runtime writes only in user folders.\n\nData: {}\nPlaylists: {}\nCache: {}\n\nKeys: b copy example playlist, ? help, q back",
+        "Config file policy: runtime writes only in user folders.\n\nData: {}\nPlaylists: {}\nCache: {}\nVolume: {}%\n\nKeys: b copy example playlist, ? help, q back",
         app.config.data_dir.display(),
         app.config.playlists_dir.display(),
-        app.config.cache_dir.display()
+        app.config.cache_dir.display(),
+        (app.config.volume * 100.0).round().clamp(0.0, 100.0) as u8
     );
 
     let paragraph = Paragraph::new(body).block(

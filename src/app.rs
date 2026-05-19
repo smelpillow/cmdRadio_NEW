@@ -123,6 +123,7 @@ pub struct App {
     unplayable_stations: UnplayableStationsStore,
     playlist_cache: PlaylistCacheStore,
     history: Vec<HistoryEntry>,
+    help_scroll: u16,
     connection_events: Option<Receiver<ConnectEvent>>,
     active_connect_request_id: Option<u64>,
     next_connect_request_id: u64,
@@ -136,12 +137,19 @@ pub struct App {
 
 impl App {
     pub fn new() -> Result<Self, String> {
-        let config = AppConfig::load_or_create()?;
+        let mut config = AppConfig::load_or_create()?;
         config.ensure_directories()?;
         let favorites = Self::load_favorites(&config.data_dir);
         let history = Self::load_history(&config.data_dir);
         let unplayable_stations = Self::load_unplayable_stations(&config.data_dir);
         let playlist_cache = Self::load_playlist_cache(&config.data_dir);
+        let mut player = RadioPlayer::new()?;
+        let normalized_volume = config.volume.clamp(0.0, 1.0);
+        player.set_volume(normalized_volume);
+        if (config.volume - normalized_volume).abs() > f32::EPSILON {
+            config.volume = normalized_volume;
+            let _ = config.save();
+        }
 
         let mut app = Self {
             screen: Screen::MainMenu,
@@ -166,6 +174,7 @@ impl App {
             unplayable_stations,
             playlist_cache,
             history,
+            help_scroll: 0,
             connection_events: None,
             active_connect_request_id: None,
             next_connect_request_id: 1,
@@ -174,7 +183,7 @@ impl App {
             connect_total: 0,
             connect_station_name: String::new(),
             connect_spinner_index: 0,
-            player: RadioPlayer::new()?,
+            player,
         };
 
         app.refresh_playlists();
@@ -190,6 +199,7 @@ impl App {
     pub fn on_key(&mut self, code: KeyCode) -> bool {
         if code == KeyCode::Char('?') && self.screen != Screen::Help {
             self.previous_screen = self.screen;
+            self.help_scroll = 0;
             self.screen = Screen::Help;
             return false;
         }
@@ -529,10 +539,12 @@ impl App {
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
                 let new_vol = self.player.adjust_volume(0.05);
+                self.persist_volume(new_vol);
                 self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
                 let new_vol = self.player.adjust_volume(-0.05);
+                self.persist_volume(new_vol);
                 self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
             }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::StationBrowser,
@@ -543,12 +555,34 @@ impl App {
 
     fn handle_help(&mut self, code: KeyCode) -> bool {
         match code {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                self.help_scroll = self.help_scroll.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                self.help_scroll = self.help_scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => {
+                self.help_scroll = self.help_scroll.saturating_sub(8);
+            }
+            KeyCode::PageDown => {
+                self.help_scroll = self.help_scroll.saturating_add(8);
+            }
+            KeyCode::Home => {
+                self.help_scroll = 0;
+            }
+            KeyCode::End => {
+                self.help_scroll = u16::MAX;
+            }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Char('?') => {
                 self.screen = self.previous_screen;
             }
             _ => {}
         }
         false
+    }
+
+    pub fn help_scroll(&self) -> u16 {
+        self.help_scroll
     }
 
     fn handle_config(&mut self, code: KeyCode) -> bool {
@@ -815,6 +849,13 @@ impl App {
         (self.player.volume() * 100.0).round().clamp(0.0, 100.0) as u8
     }
 
+    fn persist_volume(&mut self, volume: f32) {
+        self.config.volume = volume.clamp(0.0, 1.0);
+        if let Err(err) = self.config.save() {
+            eprintln!("failed to persist volume in config.toml: {err}");
+        }
+    }
+
     pub fn shuffle_label(&self) -> &'static str {
         if self.shuffle { "ON" } else { "OFF" }
     }
@@ -948,12 +989,45 @@ impl App {
         self.favorites.retain(|fav| fav.url != url);
     }
 
-    pub fn icy_artist(&self) -> Option<String> {
-        self.player.current_metadata().and_then(|m| m.artist)
+    pub fn icy_artist_title(&self) -> (Option<String>, Option<String>) {
+        if let Some(metadata) = self.player.current_metadata() {
+            (metadata.artist, metadata.title)
+        } else {
+            (None, None)
+        }
     }
 
-    pub fn icy_title(&self) -> Option<String> {
-        self.player.current_metadata().and_then(|m| m.title)
+    pub fn stream_bitrate_label(&self) -> String {
+        self.player
+            .stream_bitrate_kbps()
+            .map(|kbps| format!("{kbps} kbps"))
+            .unwrap_or_else(|| String::from("Unknown"))
+    }
+
+    pub fn stream_human_quality_label(&self) -> String {
+        let Some(content_type) = self.player.stream_content_type() else {
+            return String::from("Unknown");
+        };
+
+        let normalized = content_type.to_ascii_lowercase();
+
+        if normalized.contains("mpeg") || normalized.contains("mp3") {
+            return String::from("MP3");
+        }
+        if normalized.contains("aac") || normalized.contains("m4a") || normalized.contains("mp4") {
+            return String::from("AAC");
+        }
+        if normalized.contains("vorbis") || normalized.contains("ogg") {
+            return String::from("OGG/Vorbis");
+        }
+        if normalized.contains("flac") {
+            return String::from("FLAC");
+        }
+        if normalized.contains("wav") {
+            return String::from("WAV");
+        }
+
+        content_type.to_string()
     }
 
     fn refresh_playlists(&mut self) {
