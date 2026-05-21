@@ -3,11 +3,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 use crate::player::stream::{
     HttpStream, IcyMetadata, IcyMetadataHandle, IcyStream, PlaybackProgressHandle, RadioStream,
 };
+use crate::player::waveform::{WaveformHandle, WaveformSource, WaveformState};
 
 pub struct RadioPlayer {
     output_stream: Option<OutputStream>,
@@ -17,6 +18,7 @@ pub struct RadioPlayer {
     volume: f32,
     stream_bitrate_kbps: Option<u32>,
     stream_content_type: Option<String>,
+    waveform: Option<WaveformHandle>,
     icy_metadata: Option<IcyMetadataHandle>,
     playback_progress: Option<PlaybackProgressHandle>,
 }
@@ -31,6 +33,7 @@ impl RadioPlayer {
             volume: 1.0,
             stream_bitrate_kbps: None,
             stream_content_type: None,
+            waveform: None,
             icy_metadata: None,
             playback_progress: None,
         })
@@ -83,6 +86,9 @@ impl RadioPlayer {
         let decoder = Decoder::new(BufReader::new(stream))
             .map_err(|e| format!("decoder error. stream may require unsupported codec: {e}"))?;
 
+        let waveform = Arc::new(Mutex::new(WaveformState::new()));
+        let waveform_source = WaveformSource::new(decoder.convert_samples::<f32>(), Arc::clone(&waveform));
+
         let handle = self
             .stream_handle
             .as_ref()
@@ -90,12 +96,13 @@ impl RadioPlayer {
 
         let sink = Sink::try_new(handle).map_err(|e| format!("failed to create sink: {e}"))?;
         sink.set_volume(self.volume);
-        sink.append(decoder);
+        sink.append(waveform_source);
         sink.play();
 
         self.sink = Some(sink);
         self.paused = false;
         self.playback_progress = Some(playback_progress);
+        self.waveform = Some(waveform);
         Ok(())
     }
 
@@ -124,6 +131,7 @@ impl RadioPlayer {
         self.playback_progress = None;
         self.stream_bitrate_kbps = None;
         self.stream_content_type = None;
+        self.waveform = None;
     }
 
     pub fn is_paused(&self) -> bool {
@@ -170,6 +178,13 @@ impl RadioPlayer {
 
     pub fn stream_content_type(&self) -> Option<&str> {
         self.stream_content_type.as_deref()
+    }
+
+    pub fn waveform_levels(&self) -> (f32, f32) {
+        self.waveform
+            .as_ref()
+            .and_then(|handle| handle.lock().ok().map(|state| state.levels()))
+            .unwrap_or((0.0, 0.0))
     }
 
     pub fn current_metadata(&self) -> Option<IcyMetadata> {
