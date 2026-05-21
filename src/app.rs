@@ -819,6 +819,11 @@ impl App {
             .map(|s| s.url.as_str())
     }
 
+    pub fn selected_station_is_favorite(&self) -> Option<bool> {
+        let url = self.selected_station_url()?;
+        Some(self.is_url_favorite(url))
+    }
+
     pub fn playback_state_label(&self) -> &'static str {
         if self.is_connecting {
             "Connecting"
@@ -975,6 +980,20 @@ impl App {
         self.favorites.iter().any(|fav| fav.url == url)
     }
 
+    fn normalize_favorites_by_url(favorites: Vec<FavoriteEntry>) -> Vec<FavoriteEntry> {
+        let mut seen = HashSet::new();
+        let mut normalized = Vec::with_capacity(favorites.len());
+
+        for favorite in favorites.into_iter().rev() {
+            if seen.insert(favorite.url.clone()) {
+                normalized.push(favorite);
+            }
+        }
+
+        normalized.reverse();
+        normalized
+    }
+
     fn add_favorite(&mut self, station: &Station) {
         if !self.is_url_favorite(&station.url) {
             self.favorites.push(FavoriteEntry {
@@ -1028,6 +1047,10 @@ impl App {
         }
 
         content_type.to_string()
+    }
+
+    pub fn waveform_levels(&self) -> (f32, f32) {
+        self.player.waveform_levels()
     }
 
     fn refresh_playlists(&mut self) {
@@ -1299,11 +1322,21 @@ impl App {
             return Vec::new();
         };
 
-        serde_json::from_str::<Vec<FavoriteEntry>>(&raw).unwrap_or_default()
+        let favorites = serde_json::from_str::<Vec<FavoriteEntry>>(&raw).unwrap_or_default();
+        let original_len = favorites.len();
+        let normalized = Self::normalize_favorites_by_url(favorites);
+
+        if normalized.len() != original_len
+            && let Ok(serialized) = serde_json::to_string_pretty(&normalized)
+        {
+            let _ = fs::write(Self::favorites_path(data_dir), serialized);
+        }
+
+        normalized
     }
 
     fn save_favorites(&self) -> Result<(), String> {
-        let mut items = self.favorites.clone();
+        let mut items = Self::normalize_favorites_by_url(self.favorites.clone());
         items.sort_by(|a, b| a.url.cmp(&b.url));
         let raw = serde_json::to_string_pretty(&items)
             .map_err(|e| format!("failed to serialize favorites: {e}"))?;
