@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.0] - 2026-05-21
+
+### Added
+- Real-time audio visualizer powered by decoded stream samples.
+- Dual gradient bars (`Peak` and `Energy`) in the Player screen.
+
+### Changed
+- Player right panel now includes a dedicated bottom `Audio Visualizer` section.
+- Visualizer presentation simplified to pure bars (no percentage text).
+- Visualizer panel borders are now fully closed for consistent UI framing.
+
 ## [0.3.6] - 2026-05-19
 
 ### Added
@@ -116,6 +127,6 @@ This project has evolved across three major technology iterations:
 
 - **v0.1.x — PowerShell** ([original repo](https://github.com/smelpillow/cmdRadio)): Initial implementation using PowerShell and mpv audio backend.
 - **v0.2.x — Python** ([Python repo](https://github.com/smelpillow/cmdRadioPy)): Python rewrite maintaining mpv dependency for audio playback.
-- **v0.3.x — Rust** (current): Complete architectural redesign with custom-built audio engine (rodio-based), eliminating all external media player dependencies. Improved performance, cross-platform stability, and single-binary distribution.
+- **v0.4.x — Rust** (current): Complete architectural redesign with custom-built audio engine (rodio-based), eliminating all external media player dependencies. Improved performance, cross-platform stability, and single-binary distribution.
 
 The Rust implementation (v0.3.0+) represents a fundamental shift toward portability and self-containment, requiring no system-level media player installation.
