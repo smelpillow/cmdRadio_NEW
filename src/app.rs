@@ -35,7 +35,7 @@ const PLAYBACK_STALL_TIMEOUT_SECS: u64 = 10;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.0";
+const APP_TITLE: &str = "cmdRadio v0.4.3";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -132,6 +132,8 @@ pub struct App {
     connect_total: usize,
     connect_station_name: String,
     connect_spinner_index: usize,
+    is_muted: bool,
+    volume_before_mute: f32,
     player: RadioPlayer,
 }
 
@@ -183,6 +185,8 @@ impl App {
             connect_total: 0,
             connect_station_name: String::new(),
             connect_spinner_index: 0,
+            is_muted: false,
+            volume_before_mute: normalized_volume.max(0.05),
             player,
         };
 
@@ -538,15 +542,22 @@ impl App {
                 }
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
+                if self.is_muted {
+                    self.restore_unmuted_volume();
+                }
                 let new_vol = self.player.adjust_volume(0.05);
                 self.persist_volume(new_vol);
                 self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
+                if self.is_muted {
+                    self.restore_unmuted_volume();
+                }
                 let new_vol = self.player.adjust_volume(-0.05);
                 self.persist_volume(new_vol);
                 self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
             }
+            KeyCode::Char('m') | KeyCode::Char('M') => self.toggle_mute(),
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::StationBrowser,
             _ => {}
         }
@@ -861,6 +872,36 @@ impl App {
         }
     }
 
+    fn restore_unmuted_volume(&mut self) -> f32 {
+        let restored = self.volume_before_mute.clamp(0.0, 1.0).max(0.05);
+        self.is_muted = false;
+        self.player.set_volume(restored)
+    }
+
+    fn toggle_mute(&mut self) {
+        if self.is_muted {
+            let restored = self.restore_unmuted_volume();
+            self.persist_volume(restored);
+            self.status = format!("Unmuted: {}%", (restored * 100.0).round() as u8);
+        } else {
+            let current = self.player.volume();
+            if current > 0.0 {
+                self.volume_before_mute = current;
+            }
+            self.player.set_volume(0.0);
+            self.is_muted = true;
+            self.status = String::from("Muted");
+        }
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.is_muted
+    }
+
+    pub fn mute_label(&self) -> &'static str {
+        if self.is_muted { "ON" } else { "OFF" }
+    }
+
     pub fn shuffle_label(&self) -> &'static str {
         if self.shuffle { "ON" } else { "OFF" }
     }
@@ -869,12 +910,24 @@ impl App {
         if self.full_random_mode { "ON" } else { "OFF" }
     }
 
-    pub fn current_playlist_label(&self) -> &str {
-        self.current_playlist
-            .as_ref()
-            .and_then(|p| p.file_name())
+    pub fn current_playlist_with_location_label(&self) -> String {
+        let Some(path) = self.current_playlist.as_ref() else {
+            return String::from("<none>");
+        };
+
+        let name = path
+            .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("<none>")
+            .unwrap_or("<unknown>");
+
+        let parent = path.parent().unwrap_or(&self.config.playlists_dir);
+        let location = match parent.strip_prefix(&self.config.playlists_dir) {
+            Ok(relative) if relative.as_os_str().is_empty() => String::from("playlists/"),
+            Ok(relative) => format!("playlists/{}", relative.display()),
+            Err(_) => parent.display().to_string(),
+        };
+
+        format!("{name} - {location}")
     }
 
     pub fn is_station_search_mode(&self) -> bool {

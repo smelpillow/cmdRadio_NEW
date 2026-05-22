@@ -28,11 +28,13 @@ fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .into_iter()
             .filter_map(|i| app.playlists.get(i).map(|path| (i, path)))
             .map(|(i, path)| {
+                let name = file_name(path);
                 let count_hint = app
                     .playlist_station_count_hint(i)
                     .map(|n| format!(" [{n} st]"))
                     .unwrap_or_default();
-                ListItem::new(format!("{}{}", file_name(path), count_hint))
+                let location = playlist_location(&app.config.playlists_dir, path);
+                ListItem::new(format!("{name}{count_hint} - {location}"))
             })
             .collect()
     };
@@ -134,4 +136,14 @@ fn file_name(path: &Path) -> String {
         .and_then(|s| s.to_str())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| String::from("<unknown>"))
+}
+
+fn playlist_location(playlists_root: &Path, path: &Path) -> String {
+    let parent = path.parent().unwrap_or(playlists_root);
+
+    match parent.strip_prefix(playlists_root) {
+        Ok(relative) if relative.as_os_str().is_empty() => String::from("playlists/"),
+        Ok(relative) => format!("playlists/{}", relative.display()),
+        Err(_) => parent.display().to_string(),
+    }
 }

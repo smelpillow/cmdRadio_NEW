@@ -20,6 +20,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_left_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let state = app.playback_state_label();
     let volume = app.volume_percent();
+    let is_muted = app.is_muted();
+    let mute_mode = app.mute_label();
     let random_mode = app.shuffle_label();
     let full_random_mode = app.full_random_label();
     let favorites_filter = if app.station_favorites_only() { "ON" } else { "OFF" };
@@ -55,12 +57,20 @@ fn render_left_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::raw(full_random_mode),
     ]));
     lines.push(Line::from(vec![
+        Span::styled("[M] Mute: ", Style::default().fg(Color::Cyan)),
+        Span::raw(mute_mode),
+    ]));
+    lines.push(Line::from(vec![
         Span::styled("[*] FavFilter: ", Style::default().fg(Color::Cyan)),
         Span::raw(favorites_filter),
     ]));
     lines.push(Line::from(""));
 
-    let volume_bar = format!("{}%", volume);
+    let volume_bar = if is_muted {
+        String::from("MUTED")
+    } else {
+        format!("{}%", volume)
+    };
     lines.push(Line::from(vec![
         Span::styled("Volume: ", Style::default().fg(Color::Cyan)),
         Span::styled(volume_bar, Style::default().fg(Color::Yellow)),
@@ -99,7 +109,7 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let bitrate = app.stream_bitrate_label();
     let human_quality = app.stream_human_quality_label();
     let url = app.selected_station_url().unwrap_or("<none>");
-    let m3u_name = app.current_playlist_label();
+    let m3u_name = app.current_playlist_with_location_label();
     let status = app.status.as_str();
 
     let lines = vec![

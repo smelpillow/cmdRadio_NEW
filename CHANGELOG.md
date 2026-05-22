@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.3] - 2026-05-22
+
+### Added
+- Mute/unmute control in Player (`m`) with on-screen mute status.
+- Favorite status indicator for the currently playing station.
+
+### Changed
+- Favorites persistence now deduplicates entries by stream URL.
+- Playlist browser rows now include relative playlist location.
+- Player M3U label now includes playlist location context.
+
 ## [0.4.0] - 2026-05-21
 
 ### Added
