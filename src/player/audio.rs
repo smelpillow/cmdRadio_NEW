@@ -6,6 +6,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
+use crate::logger;
 use crate::player::stream::{
     HttpStream, IcyMetadata, IcyMetadataHandle, IcyStream, PlaybackProgressHandle, RadioStream,
 };
@@ -43,6 +44,11 @@ impl RadioPlayer {
     }
 
     pub fn play_from_url(&mut self, url: &str, timeout: Duration) -> Result<(), String> {
+        logger::info(&format!(
+            "play_from_url requested: url={} timeout_secs={}",
+            url,
+            timeout.as_secs().max(1)
+        ));
         self.stop();
         self.ensure_output()?;
 
@@ -129,6 +135,7 @@ impl RadioPlayer {
         if let Some(sink) = self.sink.take() {
             sink.stop();
         }
+        logger::info("playback stopped");
         self.paused = false;
         self.icy_metadata = None;
         self.playback_progress = None;
@@ -191,6 +198,7 @@ impl RadioPlayer {
         if let Some(sink) = self.sink.take() {
             sink.stop();
         }
+        logger::warn("invalidating audio output device and sink for rebind");
         self.output_stream = None;
         self.stream_handle = None;
         self.bound_output_device_name = None;
@@ -230,6 +238,9 @@ impl RadioPlayer {
         };
 
         if !has_output || device_changed {
+            if device_changed {
+                logger::warn("default output device change detected in ensure_output");
+            }
             self.output_stream = None;
             self.stream_handle = None;
             let (stream, handle) = OutputStream::try_default()
@@ -237,6 +248,11 @@ impl RadioPlayer {
             self.output_stream = Some(stream);
             self.stream_handle = Some(handle);
             self.bound_output_device_name = current_default_output_device_name();
+            if let Some(name) = self.bound_output_device_name.as_deref() {
+                logger::info(&format!("audio output bound to default device: {}", name));
+            } else {
+                logger::warn("audio output bound, but default device name unavailable");
+            }
         }
         Ok(())
     }

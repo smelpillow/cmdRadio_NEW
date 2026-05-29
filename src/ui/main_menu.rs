@@ -10,6 +10,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ListItem::new("Browse M3U playlists"),
         ListItem::new("Full random (M3U + station)"),
         ListItem::new("Favorites"),
+        ListItem::new("History (last 7 days)"),
         ListItem::new("Configuration"),
         ListItem::new("Exit"),
     ];

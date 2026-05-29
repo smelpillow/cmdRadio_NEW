@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.5] - 2026-05-29
+
+### Added
+- Playback history screen in Main Menu with direct replay from stored URLs.
+- 7-day history retention with accumulated listening time per station.
+- Diagnostics file logging for key playback, recovery, and connection events.
+
+### Changed
+- Exiting Player with `q`/`Esc` now stops playback.
+- Main menu includes a dedicated History option and Help includes History controls.
+- CI now triggers on `Main` branch naming.
+
 ## [0.4.4] - 2026-05-29
 
 ### Added

@@ -12,6 +12,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AppConfig;
+use crate::logger;
 use crate::m3u::parser::{Station, parse_m3u_file, scan_m3u_files};
 use crate::player::audio::RadioPlayer;
 
@@ -21,6 +22,7 @@ pub enum Screen {
     PlaylistBrowser,
     StationBrowser,
     Player,
+    History,
     Config,
     Help,
 }
@@ -29,20 +31,39 @@ const FAVORITES_FILE_NAME: &str = "favorites.json";
 const HISTORY_FILE_NAME: &str = "history.json";
 const PLAYLIST_CACHE_FILE_NAME: &str = "playlist_cache.json";
 const UNPLAYABLE_STATIONS_FILE_NAME: &str = "unplayable_stations.json";
-const HISTORY_LIMIT: usize = 50;
+const HISTORY_LIMIT: usize = 2000;
+const HISTORY_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 const PAGE_STEP: usize = 12;
 const PLAYBACK_STALL_TIMEOUT_SECS: u64 = 10;
 const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.4";
+const APP_TITLE: &str = "cmdRadio v0.4.5";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
     name: String,
     url: String,
     played_at_epoch_secs: u64,
+    #[serde(default)]
+    duration_secs: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PlaybackSession {
+    name: String,
+    url: String,
+    started_at_epoch_secs: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryViewItem {
+    pub name: String,
+    pub url: String,
+    pub last_played_epoch_secs: u64,
+    pub total_duration_secs: u64,
+    pub is_favorite: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +130,7 @@ pub struct App {
     pub main_menu_index: usize,
     pub playlist_index: usize,
     pub station_index: usize,
+    pub history_index: usize,
     pub selected_station_index: Option<usize>,
     pub playlists: Vec<PathBuf>,
     pub stations: Vec<Station>,
@@ -124,6 +146,7 @@ pub struct App {
     unplayable_stations: UnplayableStationsStore,
     playlist_cache: PlaylistCacheStore,
     history: Vec<HistoryEntry>,
+    playback_session: Option<PlaybackSession>,
     help_scroll: u16,
     connection_events: Option<Receiver<ConnectEvent>>,
     active_connect_request_id: Option<u64>,
@@ -143,6 +166,8 @@ impl App {
     pub fn new() -> Result<Self, String> {
         let mut config = AppConfig::load_or_create()?;
         config.ensure_directories()?;
+        logger::init(config.diagnostics_log_path());
+        logger::info("App initialized");
         let favorites = Self::load_favorites(&config.data_dir);
         let history = Self::load_history(&config.data_dir);
         let unplayable_stations = Self::load_unplayable_stations(&config.data_dir);
@@ -163,6 +188,7 @@ impl App {
             main_menu_index: 0,
             playlist_index: 0,
             station_index: 0,
+            history_index: 0,
             selected_station_index: None,
             playlists: Vec::new(),
             stations: Vec::new(),
@@ -178,6 +204,7 @@ impl App {
             unplayable_stations,
             playlist_cache,
             history,
+            playback_session: None,
             help_scroll: 0,
             connection_events: None,
             active_connect_request_id: None,
@@ -216,13 +243,14 @@ impl App {
             Screen::PlaylistBrowser => self.handle_playlist_browser(code),
             Screen::StationBrowser => self.handle_station_browser(code),
             Screen::Player => self.handle_player(code),
+            Screen::History => self.handle_history(code),
             Screen::Config => self.handle_config(code),
             Screen::Help => self.handle_help(code),
         }
     }
 
     fn handle_main_menu(&mut self, code: KeyCode) -> bool {
-        let menu_len = 5;
+        let menu_len = 6;
         match code {
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                 if self.main_menu_index > 0 {
@@ -244,11 +272,22 @@ impl App {
                 }
                 1 => self.start_full_random(),
                 2 => self.open_favorites_browser(),
-                3 => self.screen = Screen::Config,
-                4 => return true,
+                3 => {
+                    self.history_index = 0;
+                    self.clamp_history_cursor();
+                    self.screen = Screen::History;
+                }
+                4 => self.screen = Screen::Config,
+                5 => {
+                    self.stop_playback();
+                    return true;
+                }
                 _ => {}
             },
-            KeyCode::Char('q') | KeyCode::Char('Q') => return true,
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.stop_playback();
+                return true;
+            }
             _ => {}
         }
         false
@@ -561,7 +600,47 @@ impl App {
                 self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
             }
             KeyCode::Char('m') | KeyCode::Char('M') => self.toggle_mute(),
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::StationBrowser,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.stop_playback();
+                self.status = String::from("Playback stopped");
+                self.screen = Screen::StationBrowser;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_history(&mut self, code: KeyCode) -> bool {
+        let visible_len = self.history_view_items().len();
+        match code {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if visible_len > 0 && self.history_index > 0 {
+                    self.history_index -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if visible_len > 0 && self.history_index + 1 < visible_len {
+                    self.history_index += 1;
+                }
+            }
+            KeyCode::PageUp => {
+                self.history_index = self.history_index.saturating_sub(PAGE_STEP);
+            }
+            KeyCode::PageDown => {
+                if visible_len > 0 {
+                    self.history_index = (self.history_index + PAGE_STEP).min(visible_len - 1);
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(item) = self.selected_history_item() {
+                    self.play_url_from_history(&item.name, &item.url);
+                } else {
+                    self.status = String::from("History is empty");
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.screen = Screen::MainMenu;
+            }
             _ => {}
         }
         false
@@ -614,8 +693,11 @@ impl App {
     fn start_station(&mut self, index: usize) {
         if self.stations.is_empty() {
             self.status = String::from("No stations loaded");
+            logger::warn("start_station requested with empty stations list");
             return;
         }
+
+        self.stop_playback_for_transition();
 
         let request_id = self.next_connect_request_id;
         self.next_connect_request_id = self.next_connect_request_id.saturating_add(1);
@@ -635,6 +717,10 @@ impl App {
             .map(|s| s.name.clone())
             .unwrap_or_else(|| String::from("<unknown>"));
         self.status = format!("Connecting 1/{}: {}", total, self.connect_station_name);
+        logger::info(&format!(
+            "starting station connect request id={} station={} total_candidates={}",
+            request_id, self.connect_station_name, total
+        ));
 
         let (tx, rx) = mpsc::channel();
         self.connection_events = Some(rx);
@@ -821,6 +907,75 @@ impl App {
         }
     }
 
+    fn play_url_from_history(&mut self, name: &str, url: &str) {
+        self.full_random_mode = false;
+        self.station_search_mode = false;
+        self.station_favorites_only = false;
+        self.station_query.clear();
+        self.current_playlist = None;
+        self.stations = vec![Station {
+            name: name.to_string(),
+            url: url.to_string(),
+        }];
+        self.station_index = 0;
+        self.selected_station_index = Some(0);
+        self.start_station(0);
+    }
+
+    pub fn history_view_items(&self) -> Vec<HistoryViewItem> {
+        let cutoff = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(HISTORY_RETENTION_SECS);
+        let mut merged: HashMap<String, HistoryViewItem> = HashMap::new();
+
+        for entry in &self.history {
+            if entry.played_at_epoch_secs < cutoff {
+                continue;
+            }
+
+            let row = merged.entry(entry.url.clone()).or_insert_with(|| HistoryViewItem {
+                name: entry.name.clone(),
+                url: entry.url.clone(),
+                last_played_epoch_secs: entry.played_at_epoch_secs,
+                total_duration_secs: 0,
+                is_favorite: self.is_url_favorite(&entry.url),
+            });
+
+            row.total_duration_secs = row.total_duration_secs.saturating_add(entry.duration_secs);
+            if entry.played_at_epoch_secs > row.last_played_epoch_secs {
+                row.last_played_epoch_secs = entry.played_at_epoch_secs;
+                row.name = entry.name.clone();
+            }
+            row.is_favorite = self.is_url_favorite(&entry.url);
+        }
+
+        let mut rows: Vec<HistoryViewItem> = merged.into_values().collect();
+        rows.sort_by(|a, b| b.last_played_epoch_secs.cmp(&a.last_played_epoch_secs));
+        rows
+    }
+
+    fn selected_history_item(&self) -> Option<HistoryViewItem> {
+        self.history_view_items().get(self.history_index).cloned()
+    }
+
+    fn clamp_history_cursor(&mut self) {
+        let visible_len = self.history_view_items().len();
+        if visible_len == 0 {
+            self.history_index = 0;
+            return;
+        }
+
+        if self.history_index >= visible_len {
+            self.history_index = visible_len - 1;
+        }
+    }
+
+    pub fn history_index(&self) -> usize {
+        self.history_index
+    }
+
     pub fn selected_station_name(&self) -> Option<&str> {
         self.selected_station_index
             .and_then(|i| self.stations.get(i))
@@ -872,6 +1027,7 @@ impl App {
         self.config.volume = volume.clamp(0.0, 1.0);
         if let Err(err) = self.config.save() {
             eprintln!("failed to persist volume in config.toml: {err}");
+            logger::warn(&format!("failed to persist volume in config.toml: {err}"));
         }
     }
 
@@ -1276,27 +1432,76 @@ impl App {
         }
     }
 
-    fn record_history(&mut self, station: &Station) {
-        let played_at_epoch_secs = SystemTime::now()
+    fn begin_playback_session(&mut self, station: &Station) {
+        let started_at_epoch_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        self.history.retain(|entry| entry.url != station.url);
+        self.playback_session = Some(PlaybackSession {
+            name: station.name.clone(),
+            url: station.url.clone(),
+            started_at_epoch_secs,
+        });
+    }
+
+    fn finalize_playback_session(&mut self) {
+        let Some(session) = self.playback_session.take() else {
+            return;
+        };
+
+        let ended_at_epoch_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let duration_secs = ended_at_epoch_secs
+            .saturating_sub(session.started_at_epoch_secs)
+            .max(1);
+
         self.history.insert(
             0,
             HistoryEntry {
-                name: station.name.clone(),
-                url: station.url.clone(),
-                played_at_epoch_secs,
+                name: session.name,
+                url: session.url,
+                played_at_epoch_secs: session.started_at_epoch_secs,
+                duration_secs,
             },
         );
-        if self.history.len() > HISTORY_LIMIT {
-            self.history.truncate(HISTORY_LIMIT);
-        }
+
+        self.prune_history_in_place();
 
         if let Err(err) = self.save_history() {
             eprintln!("history save failed: {err}");
+            logger::warn(&format!("history save failed: {err}"));
+        }
+    }
+
+    fn stop_playback_for_transition(&mut self) {
+        self.finalize_playback_session();
+        self.player.stop();
+        self.abort_connect_request();
+    }
+
+    fn stop_playback(&mut self) {
+        self.stop_playback_for_transition();
+    }
+
+    fn abort_connect_request(&mut self) {
+        self.is_connecting = false;
+        self.active_connect_request_id = None;
+        self.connection_events = None;
+    }
+
+    fn prune_history_in_place(&mut self) {
+        let cutoff = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(HISTORY_RETENTION_SECS);
+
+        self.history.retain(|entry| entry.played_at_epoch_secs >= cutoff);
+        if self.history.len() > HISTORY_LIMIT {
+            self.history.truncate(HISTORY_LIMIT);
         }
     }
 
@@ -1406,11 +1611,40 @@ impl App {
             return Vec::new();
         };
 
-        serde_json::from_str::<Vec<HistoryEntry>>(&raw).unwrap_or_default()
+        let mut history = serde_json::from_str::<Vec<HistoryEntry>>(&raw).unwrap_or_default();
+        let cutoff = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(HISTORY_RETENTION_SECS);
+
+        history.retain(|entry| entry.played_at_epoch_secs >= cutoff);
+        if history.len() > HISTORY_LIMIT {
+            history.truncate(HISTORY_LIMIT);
+        }
+
+        history
     }
 
     fn save_history(&self) -> Result<(), String> {
-        let raw = serde_json::to_string_pretty(&self.history)
+        let cutoff = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(HISTORY_RETENTION_SECS);
+
+        let mut history: Vec<HistoryEntry> = self
+            .history
+            .iter()
+            .filter(|entry| entry.played_at_epoch_secs >= cutoff)
+            .cloned()
+            .collect();
+
+        if history.len() > HISTORY_LIMIT {
+            history.truncate(HISTORY_LIMIT);
+        }
+
+        let raw = serde_json::to_string_pretty(&history)
             .map_err(|e| format!("failed to serialize history: {e}"))?;
         fs::write(Self::history_path(&self.config.data_dir), raw)
             .map_err(|e| format!("failed to write history file: {e}"))
@@ -1493,7 +1727,11 @@ impl App {
                     match self.player.play_from_url(&station.url, timeout) {
                         Ok(()) => {
                             self.selected_station_index = Some(station_index);
-                            self.record_history(&station);
+                            self.begin_playback_session(&station);
+                            logger::info(&format!(
+                                "playback started: station={} url={}",
+                                station.name, station.url
+                            ));
                             if let Some(prev_err) = recovered_from {
                                 self.status = format!(
                                     "Recovered: playing {} after failover ({prev_err})",
@@ -1504,6 +1742,10 @@ impl App {
                             }
                         }
                         Err(err) => {
+                            logger::error(&format!(
+                                "playback start failed after connect: station={} err={}",
+                                station.name, err
+                            ));
                             self.status = format!("Playback start failed after connect: {err}");
                         }
                     }
@@ -1518,6 +1760,10 @@ impl App {
                     if !station_url.is_empty() {
                         self.record_station_failure(&station_url);
                     }
+                    logger::warn(&format!(
+                        "connection failure: station_url={} error={}",
+                        station_url, error
+                    ));
                     self.is_connecting = false;
                     self.active_connect_request_id = None;
                     self.connection_events = None;
@@ -1526,6 +1772,7 @@ impl App {
                 }
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
+                    logger::warn("connection worker disconnected");
                     self.is_connecting = false;
                     self.active_connect_request_id = None;
                     self.connection_events = None;
@@ -1595,6 +1842,10 @@ impl App {
 
         self.last_output_recovery_epoch_secs = Some(now);
         self.status = String::from("Audio output changed. Reconnecting current station...");
+        logger::warn(&format!(
+            "output device switch detected, attempting reconnect: station={} url={}",
+            station.name, station.url
+        ));
 
         self.player.invalidate_output_device();
         let timeout = Duration::from_secs(self.config.stream_start_timeout_secs.max(1));
@@ -1602,9 +1853,14 @@ impl App {
         match self.player.play_from_url(&station.url, timeout) {
             Ok(()) => {
                 self.selected_station_index = Some(station_index);
+                logger::info(&format!("output device reconnected successfully: {}", station.name));
                 self.status = format!("Audio output reconnected: {}", station.name);
             }
             Err(err) => {
+                logger::error(&format!(
+                    "output device reconnect failed: station={} err={}",
+                    station.name, err
+                ));
                 self.status = format!(
                     "Audio output reconnect failed ({err}). Waiting before retry..."
                 );
@@ -1619,6 +1875,10 @@ impl App {
             .to_string();
 
         if self.full_random_mode {
+            logger::warn(&format!(
+                "auto-failover triggered in full-random mode: reason={} station={}",
+                reason, station_name
+            ));
             self.status = format!(
                 "{reason} on {station_name}. Auto-reconnect: full random next pick"
             );
@@ -1627,13 +1887,21 @@ impl App {
         }
 
         if self.stations.len() <= 1 {
-            self.player.stop();
+            self.stop_playback();
+            logger::warn(&format!(
+                "auto-failover aborted, no alternative station: reason={} station={}",
+                reason, station_name
+            ));
             self.status = format!(
                 "{reason} on {station_name}. No alternative station available"
             );
             return;
         }
 
+        logger::warn(&format!(
+            "auto-failover to next station: reason={} station={}",
+            reason, station_name
+        ));
         self.status = format!("{reason} on {station_name}. Auto-reconnect to next station");
         self.next_station();
     }

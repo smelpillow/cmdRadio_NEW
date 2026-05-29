@@ -1,4 +1,5 @@
 pub mod browser;
+pub mod history;
 pub mod help;
 pub mod main_menu;
 pub mod player_view;
@@ -15,6 +16,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         Screen::MainMenu => main_menu::render(frame, app, area),
         Screen::PlaylistBrowser | Screen::StationBrowser => browser::render(frame, app, area),
         Screen::Player => player_view::render(frame, app, area),
+        Screen::History => history::render(frame, app, area),
         Screen::Config => render_config(frame, app, area),
         Screen::Help => help::render(frame, app, area),
     }

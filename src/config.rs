@@ -98,6 +98,10 @@ impl AppConfig {
         Ok(target)
     }
 
+    pub fn diagnostics_log_path(&self) -> PathBuf {
+        self.data_dir.join("cmdradio.log")
+    }
+
     fn ensure_writable_dir(path: &Path) -> Result<(), String> {
         fs::create_dir_all(path)
             .map_err(|e| format!("failed to create directory {}: {e}", path.display()))?;

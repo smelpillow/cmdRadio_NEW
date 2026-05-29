@@ -123,4 +123,34 @@ mod tests {
 
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn parse_ignores_non_http_and_uses_fallback_station_names() {
+        let tmp = std::env::temp_dir().join("cmdradio_parser_non_http_test.m3u");
+        let content = "#EXTM3U\n#EXTINF:-1,Named Entry\nftp://example.org/not_supported\nhttps://stream.example.org/aac\nhttp://stream.example.org/mp3\n";
+        fs::write(&tmp, content).expect("test file write");
+
+        let parsed = parse_m3u_file(&tmp).expect("parse should work");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].name, "Named Entry");
+        assert_eq!(parsed[0].url, "https://stream.example.org/aac");
+        assert_eq!(parsed[1].name, "Station 2");
+        assert_eq!(parsed[1].url, "http://stream.example.org/mp3");
+
+        let _ = fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn parse_extinf_without_name_falls_back_to_default() {
+        let tmp = std::env::temp_dir().join("cmdradio_parser_extinf_fallback_test.m3u");
+        let content = "#EXTM3U\n#EXTINF:-1,\nhttps://stream.example.org/live\n";
+        fs::write(&tmp, content).expect("test file write");
+
+        let parsed = parse_m3u_file(&tmp).expect("parse should work");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Station 1");
+        assert_eq!(parsed[0].url, "https://stream.example.org/live");
+
+        let _ = fs::remove_file(tmp);
+    }
 }

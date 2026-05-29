@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod logger;
 mod m3u;
 mod player;
 mod ui;
@@ -42,6 +43,7 @@ impl Drop for TerminalGuard {
 
 fn main() {
     if let Err(err) = run() {
+        crate::logger::error(&format!("cmdradio failed: {err}"));
         eprintln!("cmdradio failed: {err}");
         std::process::exit(1);
     }
