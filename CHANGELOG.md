@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
-## [0.4.5] - 2026-05-29
+## [0.4.6] - 2026-05-29
 
 ### Added
 - Playback history screen in Main Menu with direct replay from stored URLs.
