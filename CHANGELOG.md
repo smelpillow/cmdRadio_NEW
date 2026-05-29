@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.4] - 2026-05-29
+
+### Added
+- Automatic recovery when the system default audio output device changes during playback.
+
+### Changed
+- Player now attempts output-device rebind before station failover when playback health degrades after a device switch.
+- Help screen documents automatic output recovery behavior and expected micro-cut during rebind.
+
 ## [0.4.3] - 2026-05-22
 
 ### Added

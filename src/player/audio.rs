@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 use crate::player::stream::{
@@ -13,6 +14,7 @@ use crate::player::waveform::{WaveformHandle, WaveformSource, WaveformState};
 pub struct RadioPlayer {
     output_stream: Option<OutputStream>,
     stream_handle: Option<OutputStreamHandle>,
+    bound_output_device_name: Option<String>,
     sink: Option<Sink>,
     paused: bool,
     volume: f32,
@@ -28,6 +30,7 @@ impl RadioPlayer {
         Ok(Self {
             output_stream: None,
             stream_handle: None,
+            bound_output_device_name: None,
             sink: None,
             paused: false,
             volume: 1.0,
@@ -172,6 +175,28 @@ impl RadioPlayer {
         self.volume
     }
 
+    pub fn default_output_device_changed(&self) -> bool {
+        let Some(bound_name) = self.bound_output_device_name.as_ref() else {
+            return false;
+        };
+
+        let Some(current_name) = current_default_output_device_name() else {
+            return false;
+        };
+
+        current_name != *bound_name
+    }
+
+    pub fn invalidate_output_device(&mut self) {
+        if let Some(sink) = self.sink.take() {
+            sink.stop();
+        }
+        self.output_stream = None;
+        self.stream_handle = None;
+        self.bound_output_device_name = None;
+        self.paused = false;
+    }
+
     pub fn stream_bitrate_kbps(&self) -> Option<u32> {
         self.stream_bitrate_kbps
     }
@@ -194,14 +219,33 @@ impl RadioPlayer {
     }
 
     fn ensure_output(&mut self) -> Result<(), String> {
-        if self.output_stream.is_none() || self.stream_handle.is_none() {
+        let current_default_name = current_default_output_device_name();
+        let has_output = self.output_stream.is_some() && self.stream_handle.is_some();
+        let device_changed = match (
+            self.bound_output_device_name.as_deref(),
+            current_default_name.as_deref(),
+        ) {
+            (Some(bound), Some(current)) => bound != current,
+            _ => false,
+        };
+
+        if !has_output || device_changed {
+            self.output_stream = None;
+            self.stream_handle = None;
             let (stream, handle) = OutputStream::try_default()
                 .map_err(|e| format!("audio output init failed: {e}"))?;
             self.output_stream = Some(stream);
             self.stream_handle = Some(handle);
+            self.bound_output_device_name = current_default_output_device_name();
         }
         Ok(())
     }
+}
+
+fn current_default_output_device_name() -> Option<String> {
+    let host = cpal::default_host();
+    let device = host.default_output_device()?;
+    device.name().ok()
 }
 
 pub fn current_epoch_secs() -> u64 {

@@ -32,10 +32,11 @@ const UNPLAYABLE_STATIONS_FILE_NAME: &str = "unplayable_stations.json";
 const HISTORY_LIMIT: usize = 50;
 const PAGE_STEP: usize = 12;
 const PLAYBACK_STALL_TIMEOUT_SECS: u64 = 10;
+const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.3";
+const APP_TITLE: &str = "cmdRadio v0.4.4";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -132,6 +133,7 @@ pub struct App {
     connect_total: usize,
     connect_station_name: String,
     connect_spinner_index: usize,
+    last_output_recovery_epoch_secs: Option<u64>,
     is_muted: bool,
     volume_before_mute: f32,
     player: RadioPlayer,
@@ -185,6 +187,7 @@ impl App {
             connect_total: 0,
             connect_station_name: String::new(),
             connect_spinner_index: 0,
+            last_output_recovery_epoch_secs: None,
             is_muted: false,
             volume_before_mute: normalized_volume.max(0.05),
             player,
@@ -1546,6 +1549,11 @@ impl App {
             return;
         }
 
+        if self.player.default_output_device_changed() {
+            self.try_recover_output_switch();
+            return;
+        }
+
         if self.player.is_stream_ended() {
             self.trigger_auto_failover("Stream ended");
             return;
@@ -1562,6 +1570,45 @@ impl App {
 
         if now.saturating_sub(last_progress) >= PLAYBACK_STALL_TIMEOUT_SECS {
             self.trigger_auto_failover("Audio stalled");
+        }
+    }
+
+    fn try_recover_output_switch(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if let Some(last_recovery) = self.last_output_recovery_epoch_secs
+            && now.saturating_sub(last_recovery) < OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS
+        {
+            return;
+        }
+
+        let Some(station_index) = self.selected_station_index else {
+            return;
+        };
+
+        let Some(station) = self.stations.get(station_index).cloned() else {
+            return;
+        };
+
+        self.last_output_recovery_epoch_secs = Some(now);
+        self.status = String::from("Audio output changed. Reconnecting current station...");
+
+        self.player.invalidate_output_device();
+        let timeout = Duration::from_secs(self.config.stream_start_timeout_secs.max(1));
+
+        match self.player.play_from_url(&station.url, timeout) {
+            Ok(()) => {
+                self.selected_station_index = Some(station_index);
+                self.status = format!("Audio output reconnected: {}", station.name);
+            }
+            Err(err) => {
+                self.status = format!(
+                    "Audio output reconnect failed ({err}). Waiting before retry..."
+                );
+            }
         }
     }
 

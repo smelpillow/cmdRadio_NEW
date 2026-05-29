@@ -50,6 +50,7 @@ pub fn render(frame: &mut Frame<'_>, _app: &App, area: Rect) {
         "  +/-      Volume",
         "  m        Mute/Unmute",
         "  Auto     Reconnects on stream stall/end (~10s)",
+        "  Auto     Recovers audio output when default device changes (1-2s cut)",
     ]
     .join("\n");
 
