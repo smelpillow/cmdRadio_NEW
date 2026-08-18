@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
@@ -50,13 +51,24 @@ pub fn parse_m3u_file(path: &Path) -> Result<Vec<Station>, String> {
 
 pub fn scan_m3u_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut result = Vec::new();
-    collect_m3u_files_recursive(dir, &mut result)?;
+    let mut visited_dirs = HashSet::new();
+    collect_m3u_files_recursive(dir, &mut result, &mut visited_dirs)?;
 
     result.sort();
     Ok(result)
 }
 
-fn collect_m3u_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_m3u_files_recursive(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    visited_dirs: &mut HashSet<PathBuf>,
+) -> Result<(), String> {
+    let canonical_dir = fs::canonicalize(dir)
+        .map_err(|e| format!("failed to resolve directory {}: {e}", dir.display()))?;
+    if !visited_dirs.insert(canonical_dir) {
+        return Ok(());
+    }
+
     let entries = fs::read_dir(dir)
         .map_err(|e| format!("failed to read directory {}: {e}", dir.display()))?;
 
@@ -66,7 +78,7 @@ fn collect_m3u_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(),
         let path = entry.path();
 
         if path.is_dir() {
-            collect_m3u_files_recursive(&path, out)?;
+            collect_m3u_files_recursive(&path, out, visited_dirs)?;
             continue;
         }
 

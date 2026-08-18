@@ -6,15 +6,25 @@ This project uses Semantic Versioning: `MAJOR.MINOR.PATCH`.
 
 ## Prepare a release
 
-1. Update `Cargo.toml` version.
+1. Update the version in `Cargo.toml` and the displayed application version in `src/app.rs`.
 2. Update `CHANGELOG.md` under a new version section.
-3. Commit all changes.
+3. Update user-facing documentation when behavior changes.
+4. Run the release checks:
+
+```bash
+cargo fmt --all -- --check
+cargo check
+cargo test --all-targets
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+5. Commit all release changes.
 
 ## Create release tag
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.4.7
+git push origin v0.4.7
 ```
 
 ## Automated GitHub Release
@@ -27,10 +37,14 @@ Pushing a `v*.*.*` tag triggers `.github/workflows/release.yml`:
 - Packages artifacts (`.zip` and `.tar.gz`)
 - Publishes a GitHub Release with attached binaries
 
+The release workflow is tag-driven. A normal branch push or commit does not generate release artifacts. Before pushing the tag, verify that its version matches `Cargo.toml`, the application title, and the changelog; the workflow does not enforce this consistency automatically.
+
 ## First release checklist
 
 - CI workflow green on `main`
+- Version values are consistent across `Cargo.toml`, the application title, and `CHANGELOG.md`
 - Manual smoke test done on Windows and Linux
+- Format, check, test, and Clippy checks pass
 - Changelog updated
 - Tag pushed
 - Release artifacts downloaded and tested
