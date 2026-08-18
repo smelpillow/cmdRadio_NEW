@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.7] - 2026-08-18
+
+### Added
+- Remote PLS/Shoutcast playlist resolution with bounded nesting and playlist size.
+- Background audio preparation so network reads and decoder initialization do not block the TUI.
+- Cooperative cancellation for obsolete connection attempts and application shutdown.
+- Safe recursive playlist scanning that avoids revisiting canonical directories.
+
+### Changed
+- Initial playback reuses the single HTTP stream opened by the connection worker.
+- Favorites are loaded directly from persisted favorites instead of rescanning all playlists.
+- Failed station tracking records every candidate in a failover cycle and clears automatic failures after successful playback.
+
+### Fixed
+- UI lockups while opening slow, silent, or unsupported radio streams.
+- Loss of the first audio byte during stream probing.
+- Stale automatic failure state after a station recovers.
+
 ## [0.4.6] - 2026-05-29
 
 ### Added

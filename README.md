@@ -10,11 +10,15 @@ Terminal-based online radio player in Rust with M3U playlist support.
 
 - Main menu and terminal UI navigation.
 - Playlist browser for `.m3u` and `.m3u8` files.
+- Safe recursive playlist scanning with protection against directory cycles.
 - Full random mode from main menu (random M3U + random station).
 - Station search by name and URL.
-- Favorites support with optional favorites-only filter.
+- Favorites support with optional favorites-only filter; the Favorites screen loads directly from persisted favorites.
 - Player screen with playback state (`Connecting` / `Playing` / `Paused` / `Stopped`).
-- Non-blocking station connection attempts with live progress in Player.
+- Background connection and decoder preparation with live progress in Player.
+- Cooperative cancellation when leaving Player, changing station, or exiting the application.
+- Remote PLS/Shoutcast playlist resolution with bounded playlist size and nesting depth.
+- Single stream opening for initial playback, avoiding a duplicate HTTP connection.
 - Player screen with visible random mode indicator (`ON` / `OFF`).
 - Volume controls from keyboard with live percentage display.
 - ICY metadata display (`artist` and `title`) when provided by the stream.
@@ -34,12 +38,16 @@ cmdRadio never writes mutable data in the repository folder or next to the execu
 - Playlists: `%LOCALAPPDATA%\\cmdradio\\playlists\\`
 - Cache: `%LOCALAPPDATA%\\cmdradio\\cache\\`
 
+Persistent data files are stored under the Data directory, including `favorites.json`, `history.json`, and `unplayable_stations.json`. Playlist cache data is stored under the Cache directory.
+
 ### Linux
 
 - Config: `~/.config/cmdradio/config.toml`
 - Data: `~/.local/share/cmdradio/`
 - Playlists: `~/.local/share/cmdradio/playlists/`
 - Cache: `~/.cache/cmdradio/`
+
+Persistent data files are stored under the Data directory, including `favorites.json`, `history.json`, and `unplayable_stations.json`. Playlist cache data is stored under the Cache directory.
 
 ## Quick Start
 

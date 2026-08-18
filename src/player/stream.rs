@@ -23,6 +23,39 @@ pub struct HttpStream {
     progress: Option<PlaybackProgressHandle>,
 }
 
+pub struct PrefixedReader {
+    prefix: std::io::Cursor<Vec<u8>>,
+    inner: Box<dyn Read + Send + Sync>,
+}
+
+impl PrefixedReader {
+    pub fn new(prefix: Vec<u8>, inner: Box<dyn Read + Send + Sync>) -> Self {
+        Self {
+            prefix: std::io::Cursor::new(prefix),
+            inner,
+        }
+    }
+}
+
+impl Read for PrefixedReader {
+    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+        let prefix_bytes = self.prefix.read(buf)?;
+        if prefix_bytes > 0 {
+            return Ok(prefix_bytes);
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl Seek for PrefixedReader {
+    fn seek(&mut self, _pos: SeekFrom) -> IoResult<u64> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "HTTP stream is not seekable",
+        ))
+    }
+}
+
 impl HttpStream {
     pub fn new(inner: Box<dyn Read + Send + Sync>, progress: Option<PlaybackProgressHandle>) -> Self {
         Self { inner, progress }

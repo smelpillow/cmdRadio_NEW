@@ -74,6 +74,7 @@ fn run() -> Result<(), String> {
             && key.kind == KeyEventKind::Press
         {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                app.shutdown();
                 should_quit = true;
             } else {
                 should_quit = app.on_key(key.code);

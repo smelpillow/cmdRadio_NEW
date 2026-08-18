@@ -1,4 +1,4 @@
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -8,9 +8,13 @@ use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 use crate::logger;
 use crate::player::stream::{
-    HttpStream, IcyMetadata, IcyMetadataHandle, IcyStream, PlaybackProgressHandle, RadioStream,
+    HttpStream, IcyMetadata, IcyMetadataHandle, IcyStream, PlaybackProgressHandle, PrefixedReader,
+    RadioStream,
 };
 use crate::player::waveform::{WaveformHandle, WaveformSource, WaveformState};
+
+const MAX_PLS_BYTES: u64 = 64 * 1024;
+const MAX_PLS_REDIRECTS: usize = 3;
 
 pub struct RadioPlayer {
     output_stream: Option<OutputStream>,
@@ -24,6 +28,22 @@ pub struct RadioPlayer {
     waveform: Option<WaveformHandle>,
     icy_metadata: Option<IcyMetadataHandle>,
     playback_progress: Option<PlaybackProgressHandle>,
+}
+
+pub struct OpenedRadioStream {
+    reader: Box<dyn std::io::Read + Send + Sync + 'static>,
+    icy_metaint: Option<usize>,
+    bitrate_kbps: Option<u32>,
+    content_type: Option<String>,
+}
+
+pub struct PreparedAudio {
+    source: Box<dyn Source<Item = f32> + Send>,
+    metadata: IcyMetadataHandle,
+    playback_progress: PlaybackProgressHandle,
+    waveform: WaveformHandle,
+    bitrate_kbps: Option<u32>,
+    content_type: Option<String>,
 }
 
 impl RadioPlayer {
@@ -49,8 +69,23 @@ impl RadioPlayer {
             url,
             timeout.as_secs().max(1)
         ));
-        self.stop();
-        self.ensure_output()?;
+        let stream = Self::open_url(url, timeout)?;
+        let prepared = Self::prepare_open_stream(stream)?;
+        self.play_prepared(prepared)
+    }
+
+    pub fn open_url(url: &str, timeout: Duration) -> Result<OpenedRadioStream, String> {
+        Self::open_url_with_depth(url, timeout, 0)
+    }
+
+    fn open_url_with_depth(
+        url: &str,
+        timeout: Duration,
+        depth: usize,
+    ) -> Result<OpenedRadioStream, String> {
+        if depth > MAX_PLS_REDIRECTS {
+            return Err(String::from("too many nested PLS playlists"));
+        }
 
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(timeout)
@@ -67,27 +102,52 @@ impl RadioPlayer {
         let icy_metaint = response
             .header("icy-metaint")
             .and_then(|v| v.trim().parse::<usize>().ok());
-        self.stream_bitrate_kbps = response
+        let bitrate_kbps = response
             .header("icy-br")
             .and_then(|v| v.trim().parse::<u32>().ok());
-        self.stream_content_type = response.header("content-type").map(|v| v.trim().to_string());
+        let content_type = response.header("content-type").map(|v| v.trim().to_string());
+        let mut reader = response.into_reader();
+        let mut prefix = [0_u8; 10];
+        reader
+            .read_exact(&mut prefix)
+            .map_err(|e| format!("stream probe failed: {e}"))?;
 
+        if is_pls_response(content_type.as_deref(), &prefix) {
+            let mut body = prefix.to_vec();
+            reader
+                .take(MAX_PLS_BYTES.saturating_sub(body.len() as u64))
+                .read_to_end(&mut body)
+                .map_err(|e| format!("failed to read PLS playlist: {e}"))?;
+
+            let stream_url = parse_pls_entries(&body)
+                .into_iter()
+                .next()
+                .ok_or_else(|| String::from("PLS playlist contains no HTTP stream"))?;
+            return Self::open_url_with_depth(&stream_url, timeout, depth + 1);
+        }
+
+        Ok(OpenedRadioStream {
+            icy_metaint,
+            bitrate_kbps,
+            content_type,
+            reader: Box::new(PrefixedReader::new(prefix.to_vec(), reader)),
+        })
+    }
+
+    pub fn prepare_open_stream(opened_stream: OpenedRadioStream) -> Result<PreparedAudio, String> {
         let metadata_handle = Arc::new(Mutex::new(None));
         let playback_progress = Arc::new(AtomicU64::new(current_epoch_secs()));
-        let reader = response.into_reader();
 
-        let stream = if let Some(metaint) = icy_metaint.filter(|v| *v > 0) {
-            self.icy_metadata = Some(Arc::clone(&metadata_handle));
+        let stream = if let Some(metaint) = opened_stream.icy_metaint.filter(|v| *v > 0) {
             RadioStream::Icy(IcyStream::new(
-                Box::new(reader),
+                opened_stream.reader,
                 metaint,
-                metadata_handle,
+                Arc::clone(&metadata_handle),
                 Some(Arc::clone(&playback_progress)),
             ))
         } else {
-            self.icy_metadata = Some(metadata_handle);
             RadioStream::Http(HttpStream::new(
-                Box::new(reader),
+                opened_stream.reader,
                 Some(Arc::clone(&playback_progress)),
             ))
         };
@@ -98,6 +158,23 @@ impl RadioPlayer {
         let waveform = Arc::new(Mutex::new(WaveformState::new()));
         let waveform_source = WaveformSource::new(decoder.convert_samples::<f32>(), Arc::clone(&waveform));
 
+        Ok(PreparedAudio {
+            source: Box::new(waveform_source),
+            metadata: metadata_handle,
+            playback_progress,
+            waveform,
+            bitrate_kbps: opened_stream.bitrate_kbps,
+            content_type: opened_stream.content_type,
+        })
+    }
+
+    pub fn play_prepared(&mut self, prepared: PreparedAudio) -> Result<(), String> {
+        self.stop();
+        self.ensure_output()?;
+
+        self.stream_bitrate_kbps = prepared.bitrate_kbps;
+        self.stream_content_type = prepared.content_type;
+
         let handle = self
             .stream_handle
             .as_ref()
@@ -105,13 +182,14 @@ impl RadioPlayer {
 
         let sink = Sink::try_new(handle).map_err(|e| format!("failed to create sink: {e}"))?;
         sink.set_volume(self.volume);
-        sink.append(waveform_source);
+        sink.append(prepared.source);
         sink.play();
 
         self.sink = Some(sink);
         self.paused = false;
-        self.playback_progress = Some(playback_progress);
-        self.waveform = Some(waveform);
+        self.icy_metadata = Some(prepared.metadata);
+        self.playback_progress = Some(prepared.playback_progress);
+        self.waveform = Some(prepared.waveform);
         Ok(())
     }
 
@@ -258,6 +336,43 @@ impl RadioPlayer {
     }
 }
 
+fn is_pls_response(content_type: Option<&str>, prefix: &[u8]) -> bool {
+    let content_type_matches = content_type
+        .map(|value| {
+            let media_type = value.split(';').next().unwrap_or(value).trim();
+            matches!(
+                media_type.to_ascii_lowercase().as_str(),
+                "audio/x-scpls" | "audio/scpls" | "application/pls"
+            )
+        })
+        .unwrap_or(false);
+
+    content_type_matches || String::from_utf8_lossy(prefix)
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("[playlist]")
+}
+
+fn parse_pls_entries(body: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(body);
+    let mut entries = text
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            let key = key.trim().to_ascii_lowercase();
+            let index = key
+                .strip_prefix("file")
+                .and_then(|index| index.parse::<usize>().ok())?;
+            let value = value.trim();
+            (value.starts_with("http://") || value.starts_with("https://"))
+                .then(|| (index, value.to_string()))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(index, _)| *index);
+    entries.into_iter().map(|(_, url)| url).collect()
+}
+
 fn current_default_output_device_name() -> Option<String> {
     let host = cpal::default_host();
     let device = host.default_output_device()?;
@@ -269,4 +384,35 @@ pub fn current_epoch_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_pls_response, parse_pls_entries};
+
+    #[test]
+    fn detects_shoutcast_pls_content_type_with_parameters() {
+        assert!(is_pls_response(
+            Some("audio/x-scpls; charset=utf-8"),
+            b"[playlist]"
+        ));
+    }
+
+    #[test]
+    fn detects_pls_by_body_when_content_type_is_wrong() {
+        assert!(is_pls_response(Some("text/plain"), b"  [playlist]\n"));
+    }
+
+    #[test]
+    fn parses_file_entries_in_numeric_order_and_ignores_non_http_values() {
+        let body = b"[playlist]\nFile2=https://second.example\nFile1=https://first.example\nFile3=not-a-url\n";
+
+        assert_eq!(
+            parse_pls_entries(body),
+            vec![
+                String::from("https://first.example"),
+                String::from("https://second.example"),
+            ]
+        );
+    }
 }

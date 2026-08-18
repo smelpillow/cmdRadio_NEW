@@ -17,7 +17,7 @@ pub fn render(frame: &mut Frame<'_>, _app: &App, area: Rect) {
         "  j/k      Move selection",
         "  Enter    Open option",
         "  Full random picks random M3U and random station",
-        "  Favorites opens all saved favorites found in current M3U files",
+        "  Favorites opens all saved favorites",
         "  History shows stations played in last 7 days",
         "",
         "Playlist Browser",

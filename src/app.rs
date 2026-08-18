@@ -4,9 +4,9 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::config::AppConfig;
 use crate::logger;
 use crate::m3u::parser::{Station, parse_m3u_file, scan_m3u_files};
-use crate::player::audio::RadioPlayer;
+use crate::player::audio::{PreparedAudio, RadioPlayer};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -39,7 +39,7 @@ const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.6";
+const APP_TITLE: &str = "cmdRadio v0.4.7";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -90,6 +90,37 @@ struct UnplayableStationsStore {
     stations: HashMap<String, UnplayableStation>,
 }
 
+impl UnplayableStationsStore {
+    fn record_failure(&mut self, url: &str, now: u64) {
+        let entry = self
+            .stations
+            .entry(url.to_string())
+            .or_insert_with(|| UnplayableStation {
+                fail_count: 0,
+                last_fail_ts: now,
+                manual_block: false,
+            });
+
+        entry.fail_count += 1;
+        entry.last_fail_ts = now;
+    }
+
+    fn clear_failures(&mut self, url: &str) {
+        let should_remove = self
+            .stations
+            .get_mut(url)
+            .map(|station| {
+                station.fail_count = 0;
+                !station.manual_block
+            })
+            .unwrap_or(false);
+
+        if should_remove {
+            self.stations.remove(url);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PlaylistCacheEntry {
     modified_epoch_secs: u64,
@@ -110,15 +141,16 @@ enum ConnectEvent {
         station_index: usize,
         station_name: String,
     },
-    Success {
+    Ready {
         request_id: u64,
         station_index: usize,
         recovered_from: Option<String>,
+        prepared: PreparedAudio,
     },
     Failure {
         request_id: u64,
         error: String,
-        station_url: String,
+        failed_station_urls: Vec<String>,
     },
 }
 
@@ -149,6 +181,7 @@ pub struct App {
     playback_session: Option<PlaybackSession>,
     help_scroll: u16,
     connection_events: Option<Receiver<ConnectEvent>>,
+    connection_cancel: Option<Arc<AtomicBool>>,
     active_connect_request_id: Option<u64>,
     next_connect_request_id: u64,
     is_connecting: bool,
@@ -171,7 +204,7 @@ impl App {
         let favorites = Self::load_favorites(&config.data_dir);
         let history = Self::load_history(&config.data_dir);
         let unplayable_stations = Self::load_unplayable_stations(&config.data_dir);
-        let playlist_cache = Self::load_playlist_cache(&config.data_dir);
+        let playlist_cache = Self::load_playlist_cache(&config.cache_dir);
         let mut player = RadioPlayer::new()?;
         let normalized_volume = config.volume.clamp(0.0, 1.0);
         player.set_volume(normalized_volume);
@@ -207,6 +240,7 @@ impl App {
             playback_session: None,
             help_scroll: 0,
             connection_events: None,
+            connection_cancel: None,
             active_connect_request_id: None,
             next_connect_request_id: 1,
             is_connecting: false,
@@ -228,6 +262,10 @@ impl App {
         self.connect_spinner_index = (self.connect_spinner_index + 1) % SPINNER_FRAMES.len();
         self.poll_connection_events();
         self.monitor_playback_health();
+    }
+
+    pub fn shutdown(&mut self) {
+        self.stop_playback();
     }
 
     pub fn on_key(&mut self, code: KeyCode) -> bool {
@@ -724,6 +762,8 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
         self.connection_events = Some(rx);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.connection_cancel = Some(Arc::clone(&cancel));
         let stations = self.stations.clone();
         let shuffle = self.shuffle;
         let timeout = Duration::from_secs(self.config.stream_start_timeout_secs.max(1));
@@ -733,14 +773,19 @@ impl App {
             let total = stations.len();
             let mut retries_left = total.saturating_sub(1);
             let mut last_err: Option<String> = None;
+            let mut failed_station_urls = Vec::new();
             let mut attempt = 1;
 
             loop {
+                if cancel.load(Ordering::Acquire) {
+                    return;
+                }
+
                 let Some(station) = stations.get(candidate).cloned() else {
                     let _ = tx.send(ConnectEvent::Failure {
                         request_id,
                         error: String::from("Invalid station index"),
-                        station_url: String::new(),
+                        failed_station_urls,
                     });
                     return;
                 };
@@ -753,16 +798,24 @@ impl App {
                     station_name: station.name.clone(),
                 });
 
-                match Self::probe_station(&station.url, timeout) {
-                    Ok(()) => {
-                        let _ = tx.send(ConnectEvent::Success {
+                match RadioPlayer::open_url(&station.url, timeout)
+                    .and_then(RadioPlayer::prepare_open_stream)
+                {
+                    Ok(prepared) if !cancel.load(Ordering::Acquire) => {
+                        let _ = tx.send(ConnectEvent::Ready {
                             request_id,
                             station_index: candidate,
                             recovered_from: last_err,
+                            prepared,
                         });
                         return;
                     }
+                    Ok(_) => return,
                     Err(err) => {
+                        if cancel.load(Ordering::Acquire) {
+                            return;
+                        }
+                        failed_station_urls.push(station.url.clone());
                         last_err = Some(err.clone());
                         if retries_left == 0 {
                             let _ = tx.send(ConnectEvent::Failure {
@@ -771,7 +824,7 @@ impl App {
                                     "Playback error after retries (timeout {}s): {err}",
                                     timeout.as_secs().max(1)
                                 ),
-                                station_url: station.url.clone(),
+                                failed_station_urls,
                             });
                             return;
                         }
@@ -829,37 +882,23 @@ impl App {
     }
 
     fn open_favorites_browser(&mut self) {
-        self.refresh_playlists();
-
         if self.favorites.is_empty() {
             self.status = String::from("No favorites saved yet");
             return;
         }
 
-        let mut favorites_list = Vec::new();
-        let mut seen_urls = HashSet::new();
-
-        for path in self.playlists.clone() {
-            let stations = match self.load_stations_for_playlist(&path) {
-                Ok(stations) => stations,
-                Err(_) => continue,
-            };
-
-            for station in stations {
-                if !self.is_url_favorite(&station.url) {
-                    continue;
-                }
-
-                if seen_urls.insert(station.url.clone()) {
-                    favorites_list.push(station);
-                }
-            }
-        }
-
-        if favorites_list.is_empty() {
-            self.status = String::from("No favorite stations found in current playlists");
-            return;
-        }
+        let mut favorites_list: Vec<Station> = self
+            .favorites
+            .iter()
+            .map(|favorite| Station {
+                name: if favorite.name.is_empty() {
+                    favorite.url.clone()
+                } else {
+                    favorite.name.clone()
+                },
+                url: favorite.url.clone(),
+            })
+            .collect();
 
         favorites_list.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
 
@@ -1487,6 +1526,9 @@ impl App {
     }
 
     fn abort_connect_request(&mut self) {
+        if let Some(cancel) = self.connection_cancel.take() {
+            cancel.store(true, Ordering::Release);
+        }
         self.is_connecting = false;
         self.active_connect_request_id = None;
         self.connection_events = None;
@@ -1513,8 +1555,8 @@ impl App {
         data_dir.join(HISTORY_FILE_NAME)
     }
 
-    fn playlist_cache_path(data_dir: &Path) -> PathBuf {
-        data_dir.join(PLAYLIST_CACHE_FILE_NAME)
+    fn playlist_cache_path(cache_dir: &Path) -> PathBuf {
+        cache_dir.join(PLAYLIST_CACHE_FILE_NAME)
     }
 
     fn unplayable_stations_path(data_dir: &Path) -> PathBuf {
@@ -1561,16 +1603,15 @@ impl App {
             .unwrap_or_default()
             .as_secs();
 
-        let entry = self.unplayable_stations.stations
-            .entry(url.to_string())
-            .or_insert_with(|| UnplayableStation {
-                fail_count: 0,
-                last_fail_ts: now,
-                manual_block: false,
-            });
+        self.unplayable_stations.record_failure(url, now);
 
-        entry.fail_count += 1;
-        entry.last_fail_ts = now;
+        if let Err(err) = self.save_unplayable_stations() {
+            eprintln!("unplayable stations save failed: {err}");
+        }
+    }
+
+    fn clear_station_failures(&mut self, url: &str) {
+        self.unplayable_stations.clear_failures(url);
 
         if let Err(err) = self.save_unplayable_stations() {
             eprintln!("unplayable stations save failed: {err}");
@@ -1650,8 +1691,8 @@ impl App {
             .map_err(|e| format!("failed to write history file: {e}"))
     }
 
-    fn load_playlist_cache(data_dir: &Path) -> PlaylistCacheStore {
-        let path = Self::playlist_cache_path(data_dir);
+    fn load_playlist_cache(cache_dir: &Path) -> PlaylistCacheStore {
+        let path = Self::playlist_cache_path(cache_dir);
         if let Ok(meta) = fs::metadata(&path)
             && meta.len() > PLAYLIST_CACHE_MAX_BYTES
         {
@@ -1669,7 +1710,7 @@ impl App {
     fn save_playlist_cache(&self) -> Result<(), String> {
         let raw = serde_json::to_string(&self.playlist_cache)
             .map_err(|e| format!("failed to serialize playlist cache: {e}"))?;
-        fs::write(Self::playlist_cache_path(&self.config.data_dir), raw)
+        fs::write(Self::playlist_cache_path(&self.config.cache_dir), raw)
             .map_err(|e| format!("failed to write playlist cache file: {e}"))
     }
 
@@ -1705,10 +1746,11 @@ impl App {
                     self.selected_station_index = Some(station_index);
                     self.status = format!("Connecting {attempt}/{total}: {station_name}");
                 }
-                Ok(ConnectEvent::Success {
+                Ok(ConnectEvent::Ready {
                     request_id,
                     station_index,
                     recovered_from,
+                    prepared,
                 }) => {
                     if request_id != active_request_id {
                         continue;
@@ -1716,7 +1758,7 @@ impl App {
 
                     self.is_connecting = false;
                     self.active_connect_request_id = None;
-                    let timeout = Duration::from_secs(self.config.stream_start_timeout_secs.max(1));
+                    self.connection_cancel = None;
 
                     let Some(station) = self.stations.get(station_index).cloned() else {
                         self.status = String::from("Resolved station is no longer available");
@@ -1724,8 +1766,9 @@ impl App {
                         return;
                     };
 
-                    match self.player.play_from_url(&station.url, timeout) {
+                    match self.player.play_prepared(prepared) {
                         Ok(()) => {
+                            self.clear_station_failures(&station.url);
                             self.selected_station_index = Some(station_index);
                             self.begin_playback_session(&station);
                             logger::info(&format!(
@@ -1753,19 +1796,24 @@ impl App {
                     self.connection_events = None;
                     return;
                 }
-                Ok(ConnectEvent::Failure { request_id, error, station_url }) => {
+                Ok(ConnectEvent::Failure {
+                    request_id,
+                    error,
+                    failed_station_urls,
+                }) => {
                     if request_id != active_request_id {
                         continue;
                     }
-                    if !station_url.is_empty() {
-                        self.record_station_failure(&station_url);
+                    for station_url in &failed_station_urls {
+                        self.record_station_failure(station_url);
                     }
                     logger::warn(&format!(
-                        "connection failure: station_url={} error={}",
-                        station_url, error
+                        "connection failure: failed_station_count={} error={}",
+                        failed_station_urls.len(), error
                     ));
                     self.is_connecting = false;
                     self.active_connect_request_id = None;
+                    self.connection_cancel = None;
                     self.connection_events = None;
                     self.status = error;
                     return;
@@ -1775,6 +1823,7 @@ impl App {
                     logger::warn("connection worker disconnected");
                     self.is_connecting = false;
                     self.active_connect_request_id = None;
+                    self.connection_cancel = None;
                     self.connection_events = None;
                     self.status = String::from("Connection worker disconnected");
                     return;
@@ -1906,28 +1955,6 @@ impl App {
         self.next_station();
     }
 
-    fn probe_station(url: &str, timeout: Duration) -> Result<(), String> {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(timeout)
-            .timeout_read(timeout)
-            .timeout_write(timeout)
-            .build();
-
-        let response = agent
-            .get(url)
-            .set("Icy-MetaData", "1")
-            .call()
-            .map_err(|e| format!("http request failed: {e}"))?;
-
-        let mut reader = response.into_reader();
-        let mut probe = [0_u8; 1];
-        reader
-            .read_exact(&mut probe)
-            .map_err(|e| format!("stream probe failed: {e}"))?;
-
-        Ok(())
-    }
-
     fn next_candidate_index(current: usize, len: usize, shuffle: bool) -> usize {
         if len == 0 {
             return 0;
@@ -1946,5 +1973,63 @@ impl App {
         } else {
             (current + 1) % len
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UnplayableStation, UnplayableStationsStore};
+
+    #[test]
+    fn records_failures_for_each_station() {
+        let mut store = UnplayableStationsStore {
+            schema_version: 1,
+            threshold: 3,
+            stations: Default::default(),
+        };
+
+        store.record_failure("https://one.example/stream", 10);
+        store.record_failure("https://one.example/stream", 20);
+        store.record_failure("https://two.example/stream", 30);
+
+        assert_eq!(store.stations["https://one.example/stream"].fail_count, 2);
+        assert_eq!(store.stations["https://one.example/stream"].last_fail_ts, 20);
+        assert_eq!(store.stations["https://two.example/stream"].fail_count, 1);
+    }
+
+    #[test]
+    fn clears_recovered_station_but_preserves_manual_block() {
+        let mut store = UnplayableStationsStore {
+            schema_version: 1,
+            threshold: 3,
+            stations: [
+                (
+                    String::from("https://recovered.example/stream"),
+                    UnplayableStation {
+                        fail_count: 3,
+                        last_fail_ts: 10,
+                        manual_block: false,
+                    },
+                ),
+                (
+                    String::from("https://blocked.example/stream"),
+                    UnplayableStation {
+                        fail_count: 3,
+                        last_fail_ts: 10,
+                        manual_block: true,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        store.clear_failures("https://recovered.example/stream");
+        store.clear_failures("https://blocked.example/stream");
+
+        assert!(!store.stations.contains_key("https://recovered.example/stream"));
+        let blocked = &store.stations["https://blocked.example/stream"];
+        assert_eq!(blocked.fail_count, 0);
+        assert!(blocked.manual_block);
     }
 }
