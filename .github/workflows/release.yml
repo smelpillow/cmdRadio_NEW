@@ -61,9 +61,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cmdradio-${{ matrix.target }}
-          path: |
-            cmdradio-${{ github.ref_name }}-${{ matrix.target }}.zip
-            cmdradio-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          path: ${{ format('cmdradio-{0}-{1}.{2}', github.ref_name, matrix.target, matrix.archive) }}
 
   release:
     needs: build
