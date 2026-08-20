@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,58 @@ pub fn parse_m3u_file(path: &Path) -> Result<Vec<Station>, String> {
     Ok(stations)
 }
 
+pub fn parse_pls_file(path: &Path) -> Result<Vec<Station>, String> {
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+
+    let mut file_map: std::collections::BTreeMap<usize, String> = BTreeMap::new();
+    let mut title_map: std::collections::BTreeMap<usize, String> = BTreeMap::new();
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('[') {
+            continue;
+        }
+
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+
+        let key = key.trim();
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+
+        if let Some(index_text) = key.strip_prefix("File") {
+            if let Ok(index) = index_text.parse::<usize>()
+                && (value.starts_with("http://") || value.starts_with("https://"))
+            {
+                file_map.insert(index, value.to_string());
+            }
+            continue;
+        }
+
+        if let Some(index_text) = key.strip_prefix("Title") {
+            if let Ok(index) = index_text.parse::<usize>() {
+                title_map.insert(index, value.to_string());
+            }
+        }
+    }
+
+    let mut stations = Vec::new();
+    for (index, url) in file_map {
+        let name = title_map
+            .get(&index)
+            .cloned()
+            .filter(|name: &String| !name.trim().is_empty())
+            .unwrap_or_else(|| format!("Station {}", stations.len() + 1));
+        stations.push(Station { name, url });
+    }
+
+    Ok(stations)
+}
+
 pub fn scan_m3u_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut result = Vec::new();
     let mut visited_dirs = HashSet::new();
@@ -85,7 +137,11 @@ fn collect_m3u_files_recursive(
         if path
             .extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("m3u") || ext.eq_ignore_ascii_case("m3u8"))
+            .map(|ext| {
+                ext.eq_ignore_ascii_case("m3u")
+                    || ext.eq_ignore_ascii_case("m3u8")
+                    || ext.eq_ignore_ascii_case("pls")
+            })
             .unwrap_or(false)
         {
             out.push(path);
@@ -164,5 +220,35 @@ mod tests {
         assert_eq!(parsed[0].url, "https://stream.example.org/live");
 
         let _ = fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn parse_pls_file_supports_local_station_lists() {
+        let tmp = std::env::temp_dir().join("cmdradio_parser_pls_test.pls");
+        let content = "[playlist]\nFile1=https://stream.example.org/live\nTitle1=Rock FM\nLength1=-1\nNumberOfEntries=1\nVersion=2\n";
+        fs::write(&tmp, content).expect("test file write");
+
+        let parsed = parse_pls_file(&tmp).expect("PLS parse should work");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Rock FM");
+        assert_eq!(parsed[0].url, "https://stream.example.org/live");
+
+        let _ = fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn scan_m3u_files_includes_pls_playlists() {
+        let root = std::env::temp_dir().join("cmdradio_scan_pls_test");
+        fs::create_dir_all(&root).expect("root dir created");
+        fs::write(root.join("stations.pls"), "[playlist]\nFile1=https://stream.example.org/live\n").expect("pls file created");
+        fs::write(root.join("another.m3u"), "#EXTM3U\nhttps://stream2.example.org/live\n").expect("m3u file created");
+
+        let scanned = scan_m3u_files(&root).expect("scan should work");
+
+        assert_eq!(scanned.len(), 2);
+        assert!(scanned.iter().any(|p| p.ends_with("stations.pls")));
+        assert!(scanned.iter().any(|p| p.ends_with("another.m3u")));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

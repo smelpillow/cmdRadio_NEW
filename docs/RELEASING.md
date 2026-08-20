@@ -14,17 +14,19 @@ This project uses Semantic Versioning: `MAJOR.MINOR.PATCH`.
 ```bash
 cargo fmt --all -- --check
 cargo check
+cargo build --release
 cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-5. Commit all release changes.
+5. Run the release smoke test by launching the built binary once and validating that the app starts without immediate crashes.
+6. Commit all release changes.
 
 ## Create release tag
 
 ```bash
-git tag v0.4.7
-git push origin v0.4.7
+git tag v0.4.8
+git push origin v0.4.8
 ```
 
 ## Automated GitHub Release
@@ -44,6 +46,7 @@ The release workflow is tag-driven. A normal branch push or commit does not gene
 - CI workflow green on `main`
 - Version values are consistent across `Cargo.toml`, the application title, and `CHANGELOG.md`
 - Manual smoke test done on Windows and Linux
+- Production build succeeds: `cargo build --release`
 - Format, check, test, and Clippy checks pass
 - Changelog updated
 - Tag pushed

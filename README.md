@@ -9,7 +9,7 @@ Terminal-based online radio player in Rust with M3U playlist support.
 ## Features
 
 - Main menu and terminal UI navigation.
-- Playlist browser for `.m3u` and `.m3u8` files.
+- Playlist browser for `.m3u`, `.m3u8`, and `.pls` files.
 - Safe recursive playlist scanning with protection against directory cycles.
 - Full random mode from main menu (random M3U + random station).
 - Station search by name and URL.
@@ -19,6 +19,7 @@ Terminal-based online radio player in Rust with M3U playlist support.
 - Cooperative cancellation when leaving Player, changing station, or exiting the application.
 - Remote PLS/Shoutcast playlist resolution with bounded playlist size and nesting depth.
 - Single stream opening for initial playback, avoiding a duplicate HTTP connection.
+- Better diagnostics for non-audio HTML responses, empty streams, and unsupported content types.
 - Player screen with visible random mode indicator (`ON` / `OFF`).
 - Volume controls from keyboard with live percentage display.
 - ICY metadata display (`artist` and `title`) when provided by the stream.
@@ -26,6 +27,14 @@ Terminal-based online radio player in Rust with M3U playlist support.
 - Shuffle mode for station selection.
 - Runtime files always stored in user directories (safe permissions model).
 - No external system dependencies required.
+
+## Recent reliability improvements
+
+- Connection and decoder work move off the TUI thread so slow or unsupported stations no longer freeze the interface.
+- Failover tracking records every failed candidate in a retry chain and clears stale failures after a successful recovery.
+- The app detects PLS/Shoutcast playlist responses and resolves them recursively up to a safe depth limit.
+- ICY metadata parsing strips interleaved metadata from audio before decoding, preserving the first audio bytes correctly.
+- Output device changes trigger a safe reconnect flow without blocking keyboard input.
 
 ## Runtime File Policy
 

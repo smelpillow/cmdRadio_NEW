@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AppConfig;
 use crate::logger;
-use crate::m3u::parser::{Station, parse_m3u_file, scan_m3u_files};
+use crate::m3u::parser::{Station, parse_m3u_file, parse_pls_file, scan_m3u_files};
 use crate::player::audio::{PreparedAudio, RadioPlayer};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +25,26 @@ pub enum Screen {
     History,
     Config,
     Help,
+}
+
+fn next_candidate_index(current: usize, len: usize, shuffle: bool) -> usize {
+    if len == 0 {
+        return 0;
+    }
+
+    if shuffle {
+        if len == 1 {
+            return 0;
+        }
+        let mut rng = rand::rng();
+        let mut candidate = rng.random_range(0..len);
+        if candidate == current {
+            candidate = (candidate + 1) % len;
+        }
+        candidate
+    } else {
+        (current + 1) % len
+    }
 }
 
 const FAVORITES_FILE_NAME: &str = "favorites.json";
@@ -39,7 +59,7 @@ const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.7";
+const APP_TITLE: &str = "cmdRadio v0.4.8";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -743,99 +763,22 @@ impl App {
 
         let total = self.stations.len();
         let candidate = index.min(total.saturating_sub(1));
-        self.screen = Screen::Player;
-        self.is_connecting = true;
-        self.connect_attempt = 1;
-        self.connect_total = total;
-        self.connect_spinner_index = 0;
-        self.selected_station_index = Some(candidate);
-        self.connect_station_name = self
+        let station_name = self
             .stations
             .get(candidate)
             .map(|s| s.name.clone())
             .unwrap_or_else(|| String::from("<unknown>"));
-        self.status = format!("Connecting 1/{}: {}", total, self.connect_station_name);
+
         logger::info(&format!(
             "starting station connect request id={} station={} total_candidates={}",
-            request_id, self.connect_station_name, total
+            request_id, station_name, total
         ));
 
-        let (tx, rx) = mpsc::channel();
-        self.connection_events = Some(rx);
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.connection_cancel = Some(Arc::clone(&cancel));
-        let stations = self.stations.clone();
-        let shuffle = self.shuffle;
-        let timeout = Duration::from_secs(self.config.stream_start_timeout_secs.max(1));
-
-        thread::spawn(move || {
-            let mut candidate = candidate;
-            let total = stations.len();
-            let mut retries_left = total.saturating_sub(1);
-            let mut last_err: Option<String> = None;
-            let mut failed_station_urls = Vec::new();
-            let mut attempt = 1;
-
-            loop {
-                if cancel.load(Ordering::Acquire) {
-                    return;
-                }
-
-                let Some(station) = stations.get(candidate).cloned() else {
-                    let _ = tx.send(ConnectEvent::Failure {
-                        request_id,
-                        error: String::from("Invalid station index"),
-                        failed_station_urls,
-                    });
-                    return;
-                };
-
-                let _ = tx.send(ConnectEvent::Attempt {
-                    request_id,
-                    attempt,
-                    total,
-                    station_index: candidate,
-                    station_name: station.name.clone(),
-                });
-
-                match RadioPlayer::open_url(&station.url, timeout)
-                    .and_then(RadioPlayer::prepare_open_stream)
-                {
-                    Ok(prepared) if !cancel.load(Ordering::Acquire) => {
-                        let _ = tx.send(ConnectEvent::Ready {
-                            request_id,
-                            station_index: candidate,
-                            recovered_from: last_err,
-                            prepared,
-                        });
-                        return;
-                    }
-                    Ok(_) => return,
-                    Err(err) => {
-                        if cancel.load(Ordering::Acquire) {
-                            return;
-                        }
-                        failed_station_urls.push(station.url.clone());
-                        last_err = Some(err.clone());
-                        if retries_left == 0 {
-                            let _ = tx.send(ConnectEvent::Failure {
-                                request_id,
-                                error: format!(
-                                    "Playback error after retries (timeout {}s): {err}",
-                                    timeout.as_secs().max(1)
-                                ),
-                                failed_station_urls,
-                            });
-                            return;
-                        }
-
-                        retries_left -= 1;
-                        candidate = Self::next_candidate_index(candidate, total, shuffle);
-                        attempt += 1;
-                    }
-                }
-            }
-        });
+        self.start_connect_worker_for_station(
+            candidate,
+            request_id,
+            format!("Connecting 1/{}: {}", total, station_name),
+        );
     }
 
     fn start_full_random(&mut self) {
@@ -931,19 +874,11 @@ impl App {
             return 0;
         }
 
-        if self.shuffle {
-            if self.stations.len() == 1 {
-                return 0;
-            }
-            let mut rng = rand::rng();
-            let mut candidate = rng.random_range(0..self.stations.len());
-            if candidate == current {
-                candidate = (candidate + 1) % self.stations.len();
-            }
-            candidate
-        } else {
-            (current + 1) % self.stations.len()
-        }
+        next_candidate_index(current, self.stations.len(), self.shuffle)
+    }
+
+    fn next_candidate_index(current: usize, len: usize, shuffle: bool) -> usize {
+        next_candidate_index(current, len, shuffle)
     }
 
     fn play_url_from_history(&mut self, name: &str, url: &str) {
@@ -1397,7 +1332,15 @@ impl App {
             return Ok(filtered);
         }
 
-        let stations = parse_m3u_file(path)?;
+        let stations = match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+        {
+            Some(ext) if ext == "pls" => parse_pls_file(path)?,
+            _ => parse_m3u_file(path)?,
+        };
+
         self.playlist_cache.entries.insert(
             key,
             PlaylistCacheEntry {
@@ -1897,24 +1840,112 @@ impl App {
         ));
 
         self.player.invalidate_output_device();
+
+        let request_id = self.next_connect_request_id;
+        self.next_connect_request_id = self.next_connect_request_id.saturating_add(1);
+        self.active_connect_request_id = Some(request_id);
+        self.start_connect_worker_for_station(station_index, request_id, format!("Reconnecting: {}", station.name));
+    }
+
+    fn start_connect_worker_for_station(
+        &mut self,
+        station_index: usize,
+        request_id: u64,
+        status_label: String,
+    ) {
+        let total = self.stations.len();
+        let candidate = station_index.min(total.saturating_sub(1));
+        let station_name = self
+            .stations
+            .get(candidate)
+            .map(|station| station.name.clone())
+            .unwrap_or_else(|| String::from("<unknown>"));
+
+        self.screen = Screen::Player;
+        self.is_connecting = true;
+        self.connect_attempt = 1;
+        self.connect_total = total;
+        self.connect_spinner_index = 0;
+        self.selected_station_index = Some(candidate);
+        self.connect_station_name = station_name;
+        self.status = status_label;
+
+        let (tx, rx) = mpsc::channel();
+        self.connection_events = Some(rx);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.connection_cancel = Some(Arc::clone(&cancel));
+        let stations = self.stations.clone();
+        let shuffle = self.shuffle;
         let timeout = Duration::from_secs(self.config.stream_start_timeout_secs.max(1));
 
-        match self.player.play_from_url(&station.url, timeout) {
-            Ok(()) => {
-                self.selected_station_index = Some(station_index);
-                logger::info(&format!("output device reconnected successfully: {}", station.name));
-                self.status = format!("Audio output reconnected: {}", station.name);
+        thread::spawn(move || {
+            let mut candidate = candidate;
+            let total = stations.len();
+            let mut retries_left = total.saturating_sub(1);
+            let mut last_err: Option<String> = None;
+            let mut failed_station_urls = Vec::new();
+            let mut attempt = 1;
+
+            loop {
+                if cancel.load(Ordering::Acquire) {
+                    return;
+                }
+
+                let Some(station) = stations.get(candidate).cloned() else {
+                    let _ = tx.send(ConnectEvent::Failure {
+                        request_id,
+                        error: String::from("Invalid station index"),
+                        failed_station_urls,
+                    });
+                    return;
+                };
+
+                let _ = tx.send(ConnectEvent::Attempt {
+                    request_id,
+                    attempt,
+                    total,
+                    station_index: candidate,
+                    station_name: station.name.clone(),
+                });
+
+                match RadioPlayer::open_url(&station.url, timeout)
+                    .and_then(RadioPlayer::prepare_open_stream)
+                {
+                    Ok(prepared) if !cancel.load(Ordering::Acquire) => {
+                        let _ = tx.send(ConnectEvent::Ready {
+                            request_id,
+                            station_index: candidate,
+                            recovered_from: last_err,
+                            prepared,
+                        });
+                        return;
+                    }
+                    Ok(_) => return,
+                    Err(err) => {
+                        if cancel.load(Ordering::Acquire) {
+                            return;
+                        }
+                        failed_station_urls.push(station.url.clone());
+                        last_err = Some(err.clone());
+                        if retries_left == 0 {
+                            let _ = tx.send(ConnectEvent::Failure {
+                                request_id,
+                                error: format!(
+                                    "Playback error after retries (timeout {}s): {err}",
+                                    timeout.as_secs().max(1)
+                                ),
+                                failed_station_urls,
+                            });
+                            return;
+                        }
+
+                        retries_left -= 1;
+                        candidate = App::next_candidate_index(candidate, total, shuffle);
+                        attempt += 1;
+                    }
+                }
             }
-            Err(err) => {
-                logger::error(&format!(
-                    "output device reconnect failed: station={} err={}",
-                    station.name, err
-                ));
-                self.status = format!(
-                    "Audio output reconnect failed ({err}). Waiting before retry..."
-                );
-            }
-        }
+        });
     }
 
     fn trigger_auto_failover(&mut self, reason: &str) {
@@ -1955,30 +1986,11 @@ impl App {
         self.next_station();
     }
 
-    fn next_candidate_index(current: usize, len: usize, shuffle: bool) -> usize {
-        if len == 0 {
-            return 0;
-        }
-
-        if shuffle {
-            if len == 1 {
-                return 0;
-            }
-            let mut rng = rand::rng();
-            let mut candidate = rng.random_range(0..len);
-            if candidate == current {
-                candidate = (candidate + 1) % len;
-            }
-            candidate
-        } else {
-            (current + 1) % len
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{UnplayableStation, UnplayableStationsStore};
+    use super::{UnplayableStation, UnplayableStationsStore, next_candidate_index};
 
     #[test]
     fn records_failures_for_each_station() {
@@ -2031,5 +2043,18 @@ mod tests {
         let blocked = &store.stations["https://blocked.example/stream"];
         assert_eq!(blocked.fail_count, 0);
         assert!(blocked.manual_block);
+    }
+
+    #[test]
+    fn next_candidate_index_round_robin_advances_from_current() {
+        assert_eq!(next_candidate_index(0, 3, false), 1);
+        assert_eq!(next_candidate_index(2, 3, false), 0);
+    }
+
+    #[test]
+    fn next_candidate_index_shuffle_does_not_repeat_current() {
+        let candidate = next_candidate_index(1, 3, true);
+        assert_ne!(candidate, 1);
+        assert!(candidate < 3);
     }
 }

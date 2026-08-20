@@ -63,6 +63,7 @@ impl RadioPlayer {
         })
     }
 
+    #[allow(dead_code)]
     pub fn play_from_url(&mut self, url: &str, timeout: Duration) -> Result<(), String> {
         logger::info(&format!(
             "play_from_url requested: url={} timeout_secs={}",
@@ -108,9 +109,17 @@ impl RadioPlayer {
         let content_type = response.header("content-type").map(|v| v.trim().to_string());
         let mut reader = response.into_reader();
         let mut prefix = [0_u8; 10];
-        reader
-            .read_exact(&mut prefix)
-            .map_err(|e| format!("stream probe failed: {e}"))?;
+        match reader.read_exact(&mut prefix) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(format_stream_probe_error(
+                    content_type.as_deref(),
+                    &prefix,
+                    "No audio data received from the server",
+                ));
+            }
+            Err(err) => return Err(format!("stream probe failed: {err}")),
+        }
 
         if is_pls_response(content_type.as_deref(), &prefix) {
             let mut body = prefix.to_vec();
@@ -124,6 +133,10 @@ impl RadioPlayer {
                 .next()
                 .ok_or_else(|| String::from("PLS playlist contains no HTTP stream"))?;
             return Self::open_url_with_depth(&stream_url, timeout, depth + 1);
+        }
+
+        if let Some(problem) = classify_non_audio_response(content_type.as_deref(), &prefix) {
+            return Err(problem);
         }
 
         Ok(OpenedRadioStream {
@@ -152,8 +165,12 @@ impl RadioPlayer {
             ))
         };
 
-        let decoder = Decoder::new(BufReader::new(stream))
-            .map_err(|e| format!("decoder error. stream may require unsupported codec: {e}"))?;
+        let decoder = Decoder::new(BufReader::new(stream)).map_err(|e| {
+            format_stream_decoder_error(
+                opened_stream.content_type.as_deref(),
+                &format!("decoder error. stream may require unsupported codec: {e}"),
+            )
+        })?;
 
         let waveform = Arc::new(Mutex::new(WaveformState::new()));
         let waveform_source = WaveformSource::new(decoder.convert_samples::<f32>(), Arc::clone(&waveform));
@@ -336,6 +353,66 @@ impl RadioPlayer {
     }
 }
 
+fn format_stream_probe_error(content_type: Option<&str>, prefix: &[u8], fallback: &str) -> String {
+    if let Some(problem) = classify_non_audio_response(content_type, prefix) {
+        return problem;
+    }
+
+    if prefix.is_empty() {
+        return String::from(fallback);
+    }
+
+    String::from(fallback)
+}
+
+fn format_stream_decoder_error(content_type: Option<&str>, fallback: &str) -> String {
+    if let Some(problem) = classify_non_audio_response(content_type, &[]) {
+        return problem;
+    }
+
+    String::from(fallback)
+}
+
+fn classify_non_audio_response(content_type: Option<&str>, prefix: &[u8]) -> Option<String> {
+    let media_type = content_type
+        .map(|value| value.split(';').next().unwrap_or(value).trim())
+        .filter(|value| !value.is_empty());
+
+    if let Some(media_type) = media_type {
+        let normalized = media_type.to_ascii_lowercase();
+        if matches!(
+            normalized.as_str(),
+            "text/html" | "application/xhtml+xml" | "text/plain"
+        ) {
+            return Some(format!(
+                "The station URL is not a radio stream: server returned {media_type} instead of audio"
+            ));
+        }
+
+        if !normalized.starts_with("audio/")
+            && !matches!(normalized.as_str(), "application/ogg" | "application/octet-stream")
+        {
+            return Some(format!(
+                "The station responded with an unsupported content type: {media_type}"
+            ));
+        }
+    }
+
+    let html_prefix = String::from_utf8_lossy(prefix);
+    let html_prefix = html_prefix
+        .trim_start_matches('\u{feff}')
+        .trim_start();
+    let normalized_prefix = html_prefix.to_ascii_lowercase();
+
+    if normalized_prefix.contains("<html") || normalized_prefix.contains("<!doctype html") {
+        return Some(String::from(
+            "The station URL is not a radio stream: the server returned HTML instead of audio",
+        ));
+    }
+
+    None
+}
+
 fn is_pls_response(content_type: Option<&str>, prefix: &[u8]) -> bool {
     let content_type_matches = content_type
         .map(|value| {
@@ -388,7 +465,7 @@ pub fn current_epoch_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_pls_response, parse_pls_entries};
+    use super::{classify_non_audio_response, is_pls_response, parse_pls_entries};
 
     #[test]
     fn detects_shoutcast_pls_content_type_with_parameters() {
@@ -414,5 +491,23 @@ mod tests {
                 String::from("https://second.example"),
             ]
         );
+    }
+
+    #[test]
+    fn classifies_html_responses_as_non_audio() {
+        assert!(classify_non_audio_response(Some("text/html"), b"<!DOCTYPE html>")
+            .unwrap()
+            .contains("not a radio stream"));
+        assert!(classify_non_audio_response(None, b"<html><body>hello</body></html>")
+            .unwrap()
+            .contains("HTML instead of audio"));
+    }
+
+    #[test]
+    fn classifies_html_even_when_prefix_has_invalid_utf8_before_tag() {
+        let invalid_prefix = b"\x00\xFF\xFE<html><body>hello</body></html>";
+        let message = classify_non_audio_response(None, invalid_prefix)
+            .expect("invalid UTF-8 prefix should still be recognized as HTML");
+        assert!(message.contains("HTML instead of audio"));
     }
 }

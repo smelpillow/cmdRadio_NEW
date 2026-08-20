@@ -197,7 +197,7 @@ impl Seek for RadioStream {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IcyMetadata {
     pub artist: Option<String>,
     pub title: Option<String>,
@@ -237,3 +237,74 @@ fn parse_icy_metadata(block: &[u8]) -> Option<IcyMetadata> {
 }
 
 pub type IcyMetadataHandle = Arc<Mutex<Option<IcyMetadata>>>;
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_icy_metadata, IcyMetadata, IcyStream, PrefixedReader};
+    use std::io::{Cursor, Read};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn prefixed_reader_replays_prefix_before_inner_data() {
+        let mut reader = PrefixedReader::new(b"abc".to_vec(), Box::new(Cursor::new(b"def".to_vec())));
+        let mut out = [0_u8; 5];
+
+        let first = reader.read(&mut out).unwrap();
+        assert_eq!(first, 3);
+        assert_eq!(&out[..first], b"abc");
+
+        let second = reader.read(&mut out).unwrap();
+        assert_eq!(second, 3);
+        assert_eq!(&out[..second], b"def");
+    }
+
+    #[test]
+    fn parse_icy_metadata_handles_valid_titles_and_ignores_empty_titles() {
+        let valid = b"StreamTitle='Artist - Song';StreamUrl='https://example.com';";
+        assert_eq!(
+            parse_icy_metadata(valid),
+            Some(IcyMetadata {
+                artist: Some(String::from("Artist")),
+                title: Some(String::from("Song")),
+            })
+        );
+
+        let empty = b"StreamTitle='';StreamUrl='https://example.com';";
+        assert!(parse_icy_metadata(empty).is_none());
+    }
+
+    #[test]
+    fn icy_stream_strips_metadata_from_audio_bytes() {
+        let title = "Artist - Song";
+        let metadata = format!("StreamTitle='{}';", title);
+        let block_len = ((metadata.len() + 15) / 16) as u8;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"AAAA");
+        payload.push(block_len);
+        payload.extend_from_slice(metadata.as_bytes());
+        payload.resize(payload.len() + (block_len as usize * 16 - metadata.len()), 0);
+        payload.extend_from_slice(b"BBBB");
+
+        let handle = Arc::new(Mutex::new(None));
+        let mut stream = IcyStream::new(
+            Box::new(Cursor::new(payload)),
+            4,
+            Arc::clone(&handle),
+            None,
+        );
+
+        let mut buffer = [0_u8; 8];
+        let n = stream.read(&mut buffer).unwrap();
+
+        assert_eq!(&buffer[..n], b"AAAABBBB");
+
+        let locked = handle.lock().unwrap();
+        assert_eq!(
+            locked.as_ref(),
+            Some(&IcyMetadata {
+                artist: Some(String::from("Artist")),
+                title: Some(String::from("Song")),
+            })
+        );
+    }
+}

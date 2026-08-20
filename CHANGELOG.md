@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.8] - 2026-08-20
+
+### Added
+- Diagnostic classification for HTML/non-audio responses and empty streams before decoder startup.
+- Support for local `.pls` playlist files in addition to M3U/M3U8.
+- Additional regression tests around ICY metadata handling, .pls parsing and failover candidate selection.
+
+### Changed
+- Connection recovery for output-device changes now follows the same non-blocking worker model as station startup.
+- Release checks now explicitly cover a production build and a smoke test of the packaged binary.
+- Playlist browsing now recognizes `.pls` files and loads them through the correct parser.
+
+### Fixed
+- Clearer error messages when a station URL returns HTML or an unsupported media type instead of a radio stream.
+- Failover and reconnect logic remains responsive without blocking the terminal UI.
+- Panic when HTML detection inspected prefix bytes that included invalid UTF-8 sequences.
+
 ## [0.4.7] - 2026-08-18
 
 ### Added
