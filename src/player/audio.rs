@@ -106,7 +106,9 @@ impl RadioPlayer {
         let bitrate_kbps = response
             .header("icy-br")
             .and_then(|v| v.trim().parse::<u32>().ok());
-        let content_type = response.header("content-type").map(|v| v.trim().to_string());
+        let content_type = response
+            .header("content-type")
+            .map(|v| v.trim().to_string());
         let mut reader = response.into_reader();
         let mut prefix = [0_u8; 10];
         match reader.read_exact(&mut prefix) {
@@ -173,7 +175,8 @@ impl RadioPlayer {
         })?;
 
         let waveform = Arc::new(Mutex::new(WaveformState::new()));
-        let waveform_source = WaveformSource::new(decoder.convert_samples::<f32>(), Arc::clone(&waveform));
+        let waveform_source =
+            WaveformSource::new(decoder.convert_samples::<f32>(), Arc::clone(&waveform));
 
         Ok(PreparedAudio {
             source: Box::new(waveform_source),
@@ -390,7 +393,10 @@ fn classify_non_audio_response(content_type: Option<&str>, prefix: &[u8]) -> Opt
         }
 
         if !normalized.starts_with("audio/")
-            && !matches!(normalized.as_str(), "application/ogg" | "application/octet-stream")
+            && !matches!(
+                normalized.as_str(),
+                "application/ogg" | "application/octet-stream"
+            )
         {
             return Some(format!(
                 "The station responded with an unsupported content type: {media_type}"
@@ -399,9 +405,7 @@ fn classify_non_audio_response(content_type: Option<&str>, prefix: &[u8]) -> Opt
     }
 
     let html_prefix = String::from_utf8_lossy(prefix);
-    let html_prefix = html_prefix
-        .trim_start_matches('\u{feff}')
-        .trim_start();
+    let html_prefix = html_prefix.trim_start_matches('\u{feff}').trim_start();
     let normalized_prefix = html_prefix.to_ascii_lowercase();
 
     if normalized_prefix.contains("<html") || normalized_prefix.contains("<!doctype html") {
@@ -424,11 +428,12 @@ fn is_pls_response(content_type: Option<&str>, prefix: &[u8]) -> bool {
         })
         .unwrap_or(false);
 
-    content_type_matches || String::from_utf8_lossy(prefix)
-        .trim_start_matches('\u{feff}')
-        .trim_start()
-        .to_ascii_lowercase()
-        .starts_with("[playlist]")
+    content_type_matches
+        || String::from_utf8_lossy(prefix)
+            .trim_start_matches('\u{feff}')
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("[playlist]")
 }
 
 fn parse_pls_entries(body: &[u8]) -> Vec<String> {
@@ -442,12 +447,20 @@ fn parse_pls_entries(body: &[u8]) -> Vec<String> {
                 .strip_prefix("file")
                 .and_then(|index| index.parse::<usize>().ok())?;
             let value = value.trim();
-            (value.starts_with("http://") || value.starts_with("https://"))
-                .then(|| (index, value.to_string()))
+            is_http_url(value).then(|| (index, value.to_string()))
         })
         .collect::<Vec<_>>();
     entries.sort_by_key(|(index, _)| *index);
     entries.into_iter().map(|(_, url)| url).collect()
+}
+
+fn is_http_url(value: &str) -> bool {
+    value
+        .get(..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
+        || value
+            .get(..8)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
 }
 
 fn current_default_output_device_name() -> Option<String> {
@@ -495,12 +508,16 @@ mod tests {
 
     #[test]
     fn classifies_html_responses_as_non_audio() {
-        assert!(classify_non_audio_response(Some("text/html"), b"<!DOCTYPE html>")
-            .unwrap()
-            .contains("not a radio stream"));
-        assert!(classify_non_audio_response(None, b"<html><body>hello</body></html>")
-            .unwrap()
-            .contains("HTML instead of audio"));
+        assert!(
+            classify_non_audio_response(Some("text/html"), b"<!DOCTYPE html>")
+                .unwrap()
+                .contains("not a radio stream")
+        );
+        assert!(
+            classify_non_audio_response(None, b"<html><body>hello</body></html>")
+                .unwrap()
+                .contains("HTML instead of audio")
+        );
     }
 
     #[test]

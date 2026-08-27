@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Station {
@@ -66,25 +66,25 @@ pub fn parse_pls_file(path: &Path) -> Result<Vec<Station>, String> {
             continue;
         };
 
-        let key = key.trim();
+        let key = key.trim().to_ascii_lowercase();
         let value = value.trim();
         if value.is_empty() {
             continue;
         }
 
-        if let Some(index_text) = key.strip_prefix("File") {
+        if let Some(index_text) = key.strip_prefix("file") {
             if let Ok(index) = index_text.parse::<usize>()
-                && (value.starts_with("http://") || value.starts_with("https://"))
+                && is_http_url(value)
             {
                 file_map.insert(index, value.to_string());
             }
             continue;
         }
 
-        if let Some(index_text) = key.strip_prefix("Title") {
-            if let Ok(index) = index_text.parse::<usize>() {
-                title_map.insert(index, value.to_string());
-            }
+        if let Some(index_text) = key.strip_prefix("title")
+            && let Ok(index) = index_text.parse::<usize>()
+        {
+            title_map.insert(index, value.to_string());
         }
     }
 
@@ -125,8 +125,7 @@ fn collect_m3u_files_recursive(
         .map_err(|e| format!("failed to read directory {}: {e}", dir.display()))?;
 
     for entry in entries {
-        let entry =
-            entry.map_err(|e| format!("failed to read entry in {}: {e}", dir.display()))?;
+        let entry = entry.map_err(|e| format!("failed to read entry in {}: {e}", dir.display()))?;
         let path = entry.path();
 
         if path.is_dir() {
@@ -152,7 +151,12 @@ fn collect_m3u_files_recursive(
 }
 
 fn is_http_url(value: &str) -> bool {
-    value.starts_with("http://") || value.starts_with("https://")
+    value
+        .get(..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
+        || value
+            .get(..8)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
 }
 
 #[cfg(test)]
@@ -237,11 +241,47 @@ mod tests {
     }
 
     #[test]
+    fn parse_pls_file_accepts_case_insensitive_entry_keys() {
+        let tmp = std::env::temp_dir().join("cmdradio_parser_pls_case_test.pls");
+        let content =
+            "[playlist]\nfile1=https://stream.example.org/live\ntitle1=Case Friendly FM\n";
+        fs::write(&tmp, content).expect("test file write");
+
+        let parsed = parse_pls_file(&tmp).expect("PLS parse should work");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Case Friendly FM");
+        assert_eq!(parsed[0].url, "https://stream.example.org/live");
+
+        let _ = fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn parse_pls_file_accepts_case_insensitive_http_schemes() {
+        let tmp = std::env::temp_dir().join("cmdradio_parser_pls_scheme_test.pls");
+        let content = "[playlist]\nFile1=HTTPS://stream.example.org/live\nTitle1=Uppercase FM\n";
+        fs::write(&tmp, content).expect("test file write");
+
+        let parsed = parse_pls_file(&tmp).expect("PLS parse should work");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].url, "HTTPS://stream.example.org/live");
+
+        let _ = fs::remove_file(tmp);
+    }
+
+    #[test]
     fn scan_m3u_files_includes_pls_playlists() {
         let root = std::env::temp_dir().join("cmdradio_scan_pls_test");
         fs::create_dir_all(&root).expect("root dir created");
-        fs::write(root.join("stations.pls"), "[playlist]\nFile1=https://stream.example.org/live\n").expect("pls file created");
-        fs::write(root.join("another.m3u"), "#EXTM3U\nhttps://stream2.example.org/live\n").expect("m3u file created");
+        fs::write(
+            root.join("stations.pls"),
+            "[playlist]\nFile1=https://stream.example.org/live\n",
+        )
+        .expect("pls file created");
+        fs::write(
+            root.join("another.m3u"),
+            "#EXTM3U\nhttps://stream2.example.org/live\n",
+        )
+        .expect("m3u file created");
 
         let scanned = scan_m3u_files(&root).expect("scan should work");
 

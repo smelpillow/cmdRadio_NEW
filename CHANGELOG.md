@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.10] - 2026-08-27
+
+### Added
+- Regression coverage for fragmented ICY audio and metadata reads.
+- Regression coverage for case-insensitive keys in local PLS playlists.
+
+### Fixed
+- Local PLS playlists now accept `FileN` and `TitleN` keys regardless of capitalization.
+
 ## [0.4.8] - 2026-08-20
 
 ### Added

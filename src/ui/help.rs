@@ -62,10 +62,12 @@ pub fn render(frame: &mut Frame<'_>, _app: &App, area: Rect) {
     ]
     .join("\n");
 
-    let paragraph = Paragraph::new(body).block(
-        Block::default()
-            .title(format!("{} - Help", _app.app_title()))
-            .borders(Borders::ALL),
-    ).scroll((_app.help_scroll(), 0));
+    let paragraph = Paragraph::new(body)
+        .block(
+            Block::default()
+                .title(format!("{} - Help", _app.app_title()))
+                .borders(Borders::ALL),
+        )
+        .scroll((_app.help_scroll(), 0));
     frame.render_widget(paragraph, area);
 }

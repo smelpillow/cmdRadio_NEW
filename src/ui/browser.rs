@@ -88,7 +88,11 @@ fn render_stations(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .into_iter()
             .filter_map(|i| app.stations.get(i).map(|s| (i, s)))
             .map(|(i, s)| {
-                let marker = if app.is_station_favorite(i) { "* " } else { "  " };
+                let marker = if app.is_station_favorite(i) {
+                    "* "
+                } else {
+                    "  "
+                };
                 ListItem::new(format!("{marker}{}", s.name))
             })
             .collect()

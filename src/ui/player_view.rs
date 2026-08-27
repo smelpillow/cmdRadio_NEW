@@ -24,7 +24,11 @@ fn render_left_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mute_mode = app.mute_label();
     let random_mode = app.shuffle_label();
     let full_random_mode = app.full_random_label();
-    let favorites_filter = if app.station_favorites_only() { "ON" } else { "OFF" };
+    let favorites_filter = if app.station_favorites_only() {
+        "ON"
+    } else {
+        "OFF"
+    };
     let favorites = app.favorites_count();
 
     let state_icon = match state {
@@ -36,7 +40,10 @@ fn render_left_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
 
     let mut lines = vec![Line::from(vec![
-        Span::styled(format!("{} State: ", state_icon), Style::default().fg(Color::Green)),
+        Span::styled(
+            format!("{} State: ", state_icon),
+            Style::default().fg(Color::Green),
+        ),
         Span::raw(state),
     ])];
 
@@ -116,14 +123,18 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(
                 "Station: ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(station_name),
         ]),
         Line::from(vec![
             Span::styled(
                 "Favorite: ",
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(favorite_status.0, Style::default().fg(favorite_status.1)),
         ]),
@@ -131,14 +142,18 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(
                 "Artist: ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(artist),
         ]),
         Line::from(vec![
             Span::styled(
                 "Title: ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(title),
         ]),
@@ -146,14 +161,18 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(
                 "Bitrate: ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(bitrate),
         ]),
         Line::from(vec![
             Span::styled(
                 "Format: ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(human_quality),
         ]),
@@ -161,14 +180,18 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(
                 "URL: ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(url),
         ]),
         Line::from(vec![
             Span::styled(
                 "M3U: ",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(m3u_name),
         ]),
@@ -180,13 +203,16 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(
                 "Help: ",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("press ?"),
         ]),
     ];
 
-    let widget = Paragraph::new(lines).block(Block::default().title("Now Playing").borders(Borders::ALL));
+    let widget =
+        Paragraph::new(lines).block(Block::default().title("Now Playing").borders(Borders::ALL));
 
     frame.render_widget(widget, right_chunks[0]);
     render_wave_bars(frame, app, right_chunks[1]);
@@ -217,12 +243,17 @@ fn gradient_bar_line(label: &str, level: f32, width: usize) -> Line<'static> {
     let mut spans = Vec::with_capacity(safe_width + 1);
     spans.push(Span::styled(
         format!("{label:>6}: "),
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
     ));
 
     for idx in 0..safe_width {
         if idx < filled {
-            spans.push(Span::styled("=", Style::default().fg(gradient_color(idx, safe_width))));
+            spans.push(Span::styled(
+                "=",
+                Style::default().fg(gradient_color(idx, safe_width)),
+            ));
         } else {
             spans.push(Span::styled(".", Style::default().fg(Color::DarkGray)));
         }

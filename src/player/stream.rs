@@ -57,7 +57,10 @@ impl Seek for PrefixedReader {
 }
 
 impl HttpStream {
-    pub fn new(inner: Box<dyn Read + Send + Sync>, progress: Option<PlaybackProgressHandle>) -> Self {
+    pub fn new(
+        inner: Box<dyn Read + Send + Sync>,
+        progress: Option<PlaybackProgressHandle>,
+    ) -> Self {
         Self { inner, progress }
     }
 }
@@ -240,13 +243,27 @@ pub type IcyMetadataHandle = Arc<Mutex<Option<IcyMetadata>>>;
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_icy_metadata, IcyMetadata, IcyStream, PrefixedReader};
-    use std::io::{Cursor, Read};
+    use super::{IcyMetadata, IcyStream, PrefixedReader, parse_icy_metadata};
+    use std::io::{Cursor, Read, Result as IoResult};
     use std::sync::{Arc, Mutex};
+
+    struct ChunkedReader {
+        inner: Cursor<Vec<u8>>,
+        chunk_size: usize,
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+            let limit = buf.len().min(self.chunk_size);
+            let limited = &mut buf[..limit];
+            self.inner.read(limited)
+        }
+    }
 
     #[test]
     fn prefixed_reader_replays_prefix_before_inner_data() {
-        let mut reader = PrefixedReader::new(b"abc".to_vec(), Box::new(Cursor::new(b"def".to_vec())));
+        let mut reader =
+            PrefixedReader::new(b"abc".to_vec(), Box::new(Cursor::new(b"def".to_vec())));
         let mut out = [0_u8; 5];
 
         let first = reader.read(&mut out).unwrap();
@@ -277,21 +294,20 @@ mod tests {
     fn icy_stream_strips_metadata_from_audio_bytes() {
         let title = "Artist - Song";
         let metadata = format!("StreamTitle='{}';", title);
-        let block_len = ((metadata.len() + 15) / 16) as u8;
+        let block_len = metadata.len().div_ceil(16) as u8;
         let mut payload = Vec::new();
         payload.extend_from_slice(b"AAAA");
         payload.push(block_len);
         payload.extend_from_slice(metadata.as_bytes());
-        payload.resize(payload.len() + (block_len as usize * 16 - metadata.len()), 0);
+        payload.resize(
+            payload.len() + (block_len as usize * 16 - metadata.len()),
+            0,
+        );
         payload.extend_from_slice(b"BBBB");
 
         let handle = Arc::new(Mutex::new(None));
-        let mut stream = IcyStream::new(
-            Box::new(Cursor::new(payload)),
-            4,
-            Arc::clone(&handle),
-            None,
-        );
+        let mut stream =
+            IcyStream::new(Box::new(Cursor::new(payload)), 4, Arc::clone(&handle), None);
 
         let mut buffer = [0_u8; 8];
         let n = stream.read(&mut buffer).unwrap();
@@ -304,6 +320,40 @@ mod tests {
             Some(&IcyMetadata {
                 artist: Some(String::from("Artist")),
                 title: Some(String::from("Song")),
+            })
+        );
+    }
+
+    #[test]
+    fn icy_stream_handles_fragmented_audio_and_metadata_reads() {
+        let metadata = b"StreamTitle='Artist - Fragmented';";
+        let block_len = metadata.len().div_ceil(16) as u8;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"ABCD");
+        payload.push(block_len);
+        payload.extend_from_slice(metadata);
+        payload.resize(
+            payload.len() + (block_len as usize * 16 - metadata.len()),
+            0,
+        );
+        payload.extend_from_slice(b"EFGH");
+
+        let handle = Arc::new(Mutex::new(None));
+        let reader = ChunkedReader {
+            inner: Cursor::new(payload),
+            chunk_size: 2,
+        };
+        let mut stream = IcyStream::new(Box::new(reader), 4, Arc::clone(&handle), None);
+
+        let mut buffer = [0_u8; 8];
+        let n = stream.read(&mut buffer).unwrap();
+
+        assert_eq!(&buffer[..n], b"ABCDEFGH");
+        assert_eq!(
+            handle.lock().unwrap().as_ref(),
+            Some(&IcyMetadata {
+                artist: Some(String::from("Artist")),
+                title: Some(String::from("Fragmented")),
             })
         );
     }

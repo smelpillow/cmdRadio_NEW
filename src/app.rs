@@ -6,7 +6,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -59,7 +62,7 @@ const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.8";
+const APP_TITLE: &str = "cmdRadio v0.4.10";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -395,30 +398,32 @@ impl App {
                 if let Some(actual_index) = self.selected_playlist_browser_index()
                     && let Some(path) = self.playlists.get(actual_index).cloned()
                 {
-                        match self.load_stations_for_playlist(&path) {
-                            Ok(stations) => {
-                                if stations.is_empty() {
-                                    self.status = String::from("Playlist without stations");
-                                } else {
-                                    self.full_random_mode = false;
-                                    self.stations = stations;
-                                    self.station_index = 0;
-                                    self.station_search_mode = false;
-                                    self.station_favorites_only = false;
-                                    self.station_query.clear();
-                                    self.playlist_search_mode = false;
-                                    self.current_playlist = Some(path.clone());
-                                    self.screen = Screen::StationBrowser;
-                                    self.status = format!("Loaded {}", path.display());
-                                }
-                            }
-                            Err(err) => {
-                                self.status = format!("Cannot parse playlist: {err}");
+                    match self.load_stations_for_playlist(&path) {
+                        Ok(stations) => {
+                            if stations.is_empty() {
+                                self.status = String::from("Playlist without stations");
+                            } else {
+                                self.full_random_mode = false;
+                                self.stations = stations;
+                                self.station_index = 0;
+                                self.station_search_mode = false;
+                                self.station_favorites_only = false;
+                                self.station_query.clear();
+                                self.playlist_search_mode = false;
+                                self.current_playlist = Some(path.clone());
+                                self.screen = Screen::StationBrowser;
+                                self.status = format!("Loaded {}", path.display());
                             }
                         }
+                        Err(err) => {
+                            self.status = format!("Cannot parse playlist: {err}");
+                        }
+                    }
                 }
             }
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::MainMenu,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.screen = Screen::MainMenu
+            }
             _ => {}
         }
         false
@@ -450,27 +455,27 @@ impl App {
                 if let Some(actual_index) = self.selected_playlist_browser_index()
                     && let Some(path) = self.playlists.get(actual_index).cloned()
                 {
-                        match self.load_stations_for_playlist(&path) {
-                            Ok(stations) => {
-                                if stations.is_empty() {
-                                    self.status = String::from("Playlist without stations");
-                                } else {
-                                    self.full_random_mode = false;
-                                    self.stations = stations;
-                                    self.station_index = 0;
-                                    self.station_search_mode = false;
-                                    self.station_favorites_only = false;
-                                    self.station_query.clear();
-                                    self.playlist_search_mode = false;
-                                    self.current_playlist = Some(path.clone());
-                                    self.screen = Screen::StationBrowser;
-                                    self.status = format!("Loaded {}", path.display());
-                                }
-                            }
-                            Err(err) => {
-                                self.status = format!("Cannot parse playlist: {err}");
+                    match self.load_stations_for_playlist(&path) {
+                        Ok(stations) => {
+                            if stations.is_empty() {
+                                self.status = String::from("Playlist without stations");
+                            } else {
+                                self.full_random_mode = false;
+                                self.stations = stations;
+                                self.station_index = 0;
+                                self.station_search_mode = false;
+                                self.station_favorites_only = false;
+                                self.station_query.clear();
+                                self.playlist_search_mode = false;
+                                self.current_playlist = Some(path.clone());
+                                self.screen = Screen::StationBrowser;
+                                self.status = format!("Loaded {}", path.display());
                             }
                         }
+                        Err(err) => {
+                            self.status = format!("Cannot parse playlist: {err}");
+                        }
+                    }
                 } else {
                     self.status = String::from("No playlist matches your search");
                 }
@@ -532,7 +537,11 @@ impl App {
                 self.clamp_station_cursor();
                 self.status = format!(
                     "Favorites filter {}",
-                    if self.station_favorites_only { "ON" } else { "OFF" }
+                    if self.station_favorites_only {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
                 );
             }
             KeyCode::Char('*') => {
@@ -582,7 +591,11 @@ impl App {
                 self.clamp_station_cursor();
                 self.status = format!(
                     "Favorites filter {}",
-                    if self.station_favorites_only { "ON" } else { "OFF" }
+                    if self.station_favorites_only {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
                 );
             }
             KeyCode::Char('*') => {
@@ -633,7 +646,11 @@ impl App {
                 self.station_favorites_only = !self.station_favorites_only;
                 self.status = format!(
                     "Favorites filter {}",
-                    if self.station_favorites_only { "ON" } else { "OFF" }
+                    if self.station_favorites_only {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
                 );
             }
             KeyCode::Char('*') => {
@@ -738,11 +755,15 @@ impl App {
 
     fn handle_config(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.screen = Screen::MainMenu,
-            KeyCode::Char('b') | KeyCode::Char('B') => match self.config.bootstrap_example_playlist() {
-                Ok(p) => self.status = format!("Bootstrap copied: {}", p.display()),
-                Err(e) => self.status = format!("Bootstrap failed: {e}"),
-            },
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.screen = Screen::MainMenu
+            }
+            KeyCode::Char('b') | KeyCode::Char('B') => {
+                match self.config.bootstrap_example_playlist() {
+                    Ok(p) => self.status = format!("Bootstrap copied: {}", p.display()),
+                    Err(e) => self.status = format!("Bootstrap failed: {e}"),
+                }
+            }
             _ => {}
         }
         false
@@ -843,7 +864,11 @@ impl App {
             })
             .collect();
 
-        favorites_list.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+        favorites_list.sort_by(|a, b| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        });
 
         self.full_random_mode = false;
         self.stations = favorites_list;
@@ -909,13 +934,15 @@ impl App {
                 continue;
             }
 
-            let row = merged.entry(entry.url.clone()).or_insert_with(|| HistoryViewItem {
-                name: entry.name.clone(),
-                url: entry.url.clone(),
-                last_played_epoch_secs: entry.played_at_epoch_secs,
-                total_duration_secs: 0,
-                is_favorite: self.is_url_favorite(&entry.url),
-            });
+            let row = merged
+                .entry(entry.url.clone())
+                .or_insert_with(|| HistoryViewItem {
+                    name: entry.name.clone(),
+                    url: entry.url.clone(),
+                    last_played_epoch_secs: entry.played_at_epoch_secs,
+                    total_duration_secs: 0,
+                    is_favorite: self.is_url_favorite(&entry.url),
+                });
 
             row.total_duration_secs = row.total_duration_secs.saturating_add(entry.duration_secs);
             if entry.played_at_epoch_secs > row.last_played_epoch_secs {
@@ -1260,7 +1287,9 @@ impl App {
         let mut changed = self.playlist_cache.entries.len() != before_len;
 
         // Guardrail: if cache keeps growing (very large playlists), evict the heaviest entries first.
-        while Self::estimate_playlist_cache_size_bytes(&self.playlist_cache) > PLAYLIST_CACHE_MAX_BYTES {
+        while Self::estimate_playlist_cache_size_bytes(&self.playlist_cache)
+            > PLAYLIST_CACHE_MAX_BYTES
+        {
             let Some((largest_key, _)) = self
                 .playlist_cache
                 .entries
@@ -1325,7 +1354,9 @@ impl App {
             && entry.modified_epoch_secs == signature.0
             && entry.file_size == signature.1
         {
-            let filtered = entry.stations.iter()
+            let filtered = entry
+                .stations
+                .iter()
                 .filter(|s| !self.is_url_unplayable(&s.url))
                 .cloned()
                 .collect();
@@ -1354,7 +1385,8 @@ impl App {
             eprintln!("playlist cache save failed: {err}");
         }
 
-        let filtered = stations.into_iter()
+        let filtered = stations
+            .into_iter()
             .filter(|s| !self.is_url_unplayable(&s.url))
             .collect();
         Ok(filtered)
@@ -1484,7 +1516,8 @@ impl App {
             .as_secs()
             .saturating_sub(HISTORY_RETENTION_SECS);
 
-        self.history.retain(|entry| entry.played_at_epoch_secs >= cutoff);
+        self.history
+            .retain(|entry| entry.played_at_epoch_secs >= cutoff);
         if self.history.len() > HISTORY_LIMIT {
             self.history.truncate(HISTORY_LIMIT);
         }
@@ -1516,10 +1549,12 @@ impl App {
             };
         };
 
-        serde_json::from_str::<UnplayableStationsStore>(&raw).unwrap_or_else(|_| UnplayableStationsStore {
-            schema_version: 1,
-            threshold: UNPLAYABLE_THRESHOLD,
-            stations: HashMap::new(),
+        serde_json::from_str::<UnplayableStationsStore>(&raw).unwrap_or_else(|_| {
+            UnplayableStationsStore {
+                schema_version: 1,
+                threshold: UNPLAYABLE_THRESHOLD,
+                stations: HashMap::new(),
+            }
         })
     }
 
@@ -1534,9 +1569,12 @@ impl App {
     }
 
     fn is_url_unplayable(&self, url: &str) -> bool {
-        self.unplayable_stations.stations
+        self.unplayable_stations
+            .stations
             .get(url)
-            .map(|station| station.fail_count >= self.unplayable_stations.threshold || station.manual_block)
+            .map(|station| {
+                station.fail_count >= self.unplayable_stations.threshold || station.manual_block
+            })
             .unwrap_or(false)
     }
 
@@ -1752,7 +1790,8 @@ impl App {
                     }
                     logger::warn(&format!(
                         "connection failure: failed_station_count={} error={}",
-                        failed_station_urls.len(), error
+                        failed_station_urls.len(),
+                        error
                     ));
                     self.is_connecting = false;
                     self.active_connect_request_id = None;
@@ -1844,7 +1883,11 @@ impl App {
         let request_id = self.next_connect_request_id;
         self.next_connect_request_id = self.next_connect_request_id.saturating_add(1);
         self.active_connect_request_id = Some(request_id);
-        self.start_connect_worker_for_station(station_index, request_id, format!("Reconnecting: {}", station.name));
+        self.start_connect_worker_for_station(
+            station_index,
+            request_id,
+            format!("Reconnecting: {}", station.name),
+        );
     }
 
     fn start_connect_worker_for_station(
@@ -1959,9 +2002,8 @@ impl App {
                 "auto-failover triggered in full-random mode: reason={} station={}",
                 reason, station_name
             ));
-            self.status = format!(
-                "{reason} on {station_name}. Auto-reconnect: full random next pick"
-            );
+            self.status =
+                format!("{reason} on {station_name}. Auto-reconnect: full random next pick");
             self.start_full_random();
             return;
         }
@@ -1972,9 +2014,7 @@ impl App {
                 "auto-failover aborted, no alternative station: reason={} station={}",
                 reason, station_name
             ));
-            self.status = format!(
-                "{reason} on {station_name}. No alternative station available"
-            );
+            self.status = format!("{reason} on {station_name}. No alternative station available");
             return;
         }
 
@@ -1985,7 +2025,6 @@ impl App {
         self.status = format!("{reason} on {station_name}. Auto-reconnect to next station");
         self.next_station();
     }
-
 }
 
 #[cfg(test)]
@@ -2005,7 +2044,10 @@ mod tests {
         store.record_failure("https://two.example/stream", 30);
 
         assert_eq!(store.stations["https://one.example/stream"].fail_count, 2);
-        assert_eq!(store.stations["https://one.example/stream"].last_fail_ts, 20);
+        assert_eq!(
+            store.stations["https://one.example/stream"].last_fail_ts,
+            20
+        );
         assert_eq!(store.stations["https://two.example/stream"].fail_count, 1);
     }
 
@@ -2039,7 +2081,11 @@ mod tests {
         store.clear_failures("https://recovered.example/stream");
         store.clear_failures("https://blocked.example/stream");
 
-        assert!(!store.stations.contains_key("https://recovered.example/stream"));
+        assert!(
+            !store
+                .stations
+                .contains_key("https://recovered.example/stream")
+        );
         let blocked = &store.stations["https://blocked.example/stream"];
         assert_eq!(blocked.fail_count, 0);
         assert!(blocked.manual_block);

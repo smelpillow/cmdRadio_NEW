@@ -9,7 +9,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = app.history_view_items();
 
     if rows.is_empty() {
-        let empty = List::new(vec![ListItem::new("No playback history in the last 7 days")]).block(
+        let empty = List::new(vec![ListItem::new(
+            "No playback history in the last 7 days",
+        )])
+        .block(
             Block::default()
                 .title(format!("{} - History (? help)", app.app_title()))
                 .borders(Borders::ALL),

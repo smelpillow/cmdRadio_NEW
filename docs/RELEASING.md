@@ -25,8 +25,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 ## Create release tag
 
 ```bash
-git tag v0.4.8
-git push origin v0.4.8
+git tag v0.4.10
+git push origin v0.4.10
 ```
 
 ## Automated GitHub Release

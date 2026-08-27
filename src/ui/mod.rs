@@ -1,6 +1,6 @@
 pub mod browser;
-pub mod history;
 pub mod help;
+pub mod history;
 pub mod main_menu;
 pub mod player_view;
 
