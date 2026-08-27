@@ -953,7 +953,7 @@ impl App {
         }
 
         let mut rows: Vec<HistoryViewItem> = merged.into_values().collect();
-        rows.sort_by(|a, b| b.last_played_epoch_secs.cmp(&a.last_played_epoch_secs));
+        rows.sort_by_key(|item| std::cmp::Reverse(item.last_played_epoch_secs));
         rows
     }
 
