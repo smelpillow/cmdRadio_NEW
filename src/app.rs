@@ -16,7 +16,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AppConfig;
 use crate::logger;
-use crate::m3u::parser::{Station, parse_m3u_file, parse_pls_file, scan_m3u_files};
+use crate::m3u::parser::{
+    Station, count_playlist_entries, parse_m3u_file, parse_pls_file, scan_m3u_files,
+};
 use crate::player::audio::{PreparedAudio, RadioPlayer};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,7 +64,7 @@ const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.10";
+const APP_TITLE: &str = "cmdRadio v0.4.11";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -200,6 +202,7 @@ pub struct App {
     favorites: Vec<FavoriteEntry>,
     unplayable_stations: UnplayableStationsStore,
     playlist_cache: PlaylistCacheStore,
+    playlist_counts: HashMap<String, usize>,
     history: Vec<HistoryEntry>,
     playback_session: Option<PlaybackSession>,
     help_scroll: u16,
@@ -259,6 +262,7 @@ impl App {
             favorites,
             unplayable_stations,
             playlist_cache,
+            playlist_counts: HashMap::new(),
             history,
             playback_session: None,
             help_scroll: 0,
@@ -379,6 +383,14 @@ impl App {
                     self.playlist_index = (self.playlist_index + PAGE_STEP).min(visible_len - 1);
                 }
             }
+            KeyCode::Home => {
+                self.playlist_index = 0;
+            }
+            KeyCode::End => {
+                if visible_len > 0 {
+                    self.playlist_index = visible_len - 1;
+                }
+            }
             KeyCode::Char('/') => {
                 self.playlist_search_mode = true;
                 self.playlist_query.clear();
@@ -451,6 +463,15 @@ impl App {
                     self.playlist_index = (self.playlist_index + PAGE_STEP).min(visible_len - 1);
                 }
             }
+            KeyCode::Home => {
+                self.playlist_index = 0;
+            }
+            KeyCode::End => {
+                let visible_len = self.filtered_playlist_indices().len();
+                if visible_len > 0 {
+                    self.playlist_index = visible_len - 1;
+                }
+            }
             KeyCode::Enter => {
                 if let Some(actual_index) = self.selected_playlist_browser_index()
                     && let Some(path) = self.playlists.get(actual_index).cloned()
@@ -517,6 +538,22 @@ impl App {
                     self.station_index += 1;
                 }
             }
+            KeyCode::PageUp => {
+                self.station_index = self.station_index.saturating_sub(PAGE_STEP);
+            }
+            KeyCode::PageDown => {
+                if visible_len > 0 {
+                    self.station_index = (self.station_index + PAGE_STEP).min(visible_len - 1);
+                }
+            }
+            KeyCode::Home => {
+                self.station_index = 0;
+            }
+            KeyCode::End => {
+                if visible_len > 0 {
+                    self.station_index = visible_len - 1;
+                }
+            }
             KeyCode::Enter => {
                 if let Some(actual_index) = self.selected_station_browser_index() {
                     self.full_random_mode = false;
@@ -571,6 +608,24 @@ impl App {
                 let visible_len = self.filtered_station_indices().len();
                 if visible_len > 0 && self.station_index + 1 < visible_len {
                     self.station_index += 1;
+                }
+            }
+            KeyCode::PageUp => {
+                self.station_index = self.station_index.saturating_sub(PAGE_STEP);
+            }
+            KeyCode::PageDown => {
+                let visible_len = self.filtered_station_indices().len();
+                if visible_len > 0 {
+                    self.station_index = (self.station_index + PAGE_STEP).min(visible_len - 1);
+                }
+            }
+            KeyCode::Home => {
+                self.station_index = 0;
+            }
+            KeyCode::End => {
+                let visible_len = self.filtered_station_indices().len();
+                if visible_len > 0 {
+                    self.station_index = visible_len - 1;
                 }
             }
             KeyCode::Enter => {
@@ -1141,10 +1196,7 @@ impl App {
     pub fn playlist_station_count_hint(&self, playlist_index: usize) -> Option<usize> {
         let path = self.playlists.get(playlist_index)?;
         let key = path.to_string_lossy().to_string();
-        self.playlist_cache
-            .entries
-            .get(&key)
-            .map(|entry| entry.stations.len())
+        self.playlist_counts.get(&key).copied()
     }
 
     pub fn app_title(&self) -> &'static str {
@@ -1269,6 +1321,18 @@ impl App {
     fn refresh_playlists(&mut self) {
         self.playlists = scan_m3u_files(&self.config.playlists_dir).unwrap_or_else(|_| Vec::new());
         self.prune_playlist_cache();
+        self.playlist_counts = self
+            .playlists
+            .iter()
+            .filter_map(|path| {
+                let key = path.to_string_lossy().to_string();
+                self.playlist_cache
+                    .entries
+                    .get(&key)
+                    .map(|entry| (key.clone(), entry.stations.len()))
+                    .or_else(|| count_playlist_entries(path).ok().map(|count| (key, count)))
+            })
+            .collect();
         self.clamp_playlist_cursor();
     }
 

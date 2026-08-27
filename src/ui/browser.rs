@@ -3,6 +3,7 @@ use std::path::Path;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
 use crate::app::{App, Screen};
@@ -19,7 +20,7 @@ fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let filtered = app.filtered_playlist_indices();
     let items: Vec<ListItem<'_>> = if app.playlists.is_empty() {
         vec![ListItem::new(
-            "No .m3u/.m3u8 files found in playlists directory",
+            "No .m3u/.m3u8/.pls files found in playlists directory",
         )]
     } else if filtered.is_empty() {
         vec![ListItem::new("No playlist matches current search")]
@@ -79,6 +80,8 @@ fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn render_stations(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let filtered = app.filtered_station_indices();
+    let station_count = app.stations.len();
+    let visible_count = filtered.len();
     let items: Vec<ListItem<'_>> = if app.stations.is_empty() {
         vec![ListItem::new("No stations loaded")]
     } else if filtered.is_empty() {
@@ -93,30 +96,36 @@ fn render_stations(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 } else {
                     "  "
                 };
-                ListItem::new(format!("{marker}{}", s.name))
+                ListItem::new(vec![
+                    Line::from(format!("{marker}{}", s.name)),
+                    Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(s.url.clone(), Style::default().fg(Color::DarkGray)),
+                    ]),
+                ])
             })
             .collect()
     };
 
     let mut title = format!(
-        "{} - Stations - Enter play, / search, f favorites, * favorite, ? help, q back",
+        "{} - Stations [{visible_count}/{station_count}] - Enter play, / search, f favorites, * favorite, ? help, q back",
         app.app_title()
     );
     if app.is_station_search_mode() {
         title = format!(
-            "{} - Stations Search [{}] - type to filter (name/url), f favorites, Esc exit",
+            "{} - Stations Search [{}] [{visible_count}/{station_count}] - type to filter (name/url), f favorites, Esc exit",
             app.app_title(),
             app.station_search_query()
         );
     } else if !app.station_search_query().is_empty() {
         title = format!(
-            "{} - Stations Filter [{}] - Enter play, / new search, f favorites, * favorite",
+            "{} - Stations Filter [{}] [{visible_count}/{station_count}] - Enter play, / new search, f favorites, * favorite",
             app.app_title(),
             app.station_search_query()
         );
     } else if app.station_favorites_only() {
         title = format!(
-            "{} - Stations [Favorites only] - Enter play, / search, f favorites, * favorite",
+            "{} - Stations [Favorites only] [{visible_count}/{station_count}] - Enter play, / search, f favorites, * favorite",
             app.app_title()
         );
     }

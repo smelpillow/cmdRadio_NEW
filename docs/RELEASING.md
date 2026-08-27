@@ -25,9 +25,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 ## Create release tag
 
 ```bash
-git tag v0.4.10
-git push origin v0.4.10
+git tag vX.Y.Z
+git push origin Main --tags
 ```
+
+Use the exact version from `Cargo.toml` for `X.Y.Z`. The tag must be new; pushing an existing tag does not create a new release run.
 
 ## Automated GitHub Release
 

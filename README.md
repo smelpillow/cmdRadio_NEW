@@ -80,6 +80,8 @@ All alphabetic shortcuts are case-insensitive (`n`/`N`, `q`/`Q`, etc.).
 - `r`: toggle shuffle
 - `+` / `=`: volume up (+5%, max 100%)
 - `-` / `_`: volume down (-5%, min 0%)
+- `PageUp` / `PageDown`: move one page in playlist, station, and search browsers
+- `Home` / `End`: jump to the first or last item in playlist, station, and search browsers
 - `q` / `Esc`: back/exit
 
 ## Development
@@ -92,4 +94,31 @@ cargo test
 
 ## Releases
 
-See `docs/RELEASING.md`.
+Releases are created from a version tag on `Main`. A normal push only runs CI; it does not publish downloadable release files.
+
+The release sequence is:
+
+1. Make the changes on a feature branch and update the version in `Cargo.toml`, `src/app.rs`, and `CHANGELOG.md`.
+2. Run the local release checks:
+
+	```bash
+	cargo fmt --all -- --check
+	cargo check
+	cargo test --all-targets --all-features
+	cargo clippy --all-targets --all-features -- -D warnings
+	cargo build --release
+	```
+
+3. Commit the changes and merge the branch into `Main`.
+4. Create a new, unused tag matching the package version and push it:
+
+	```bash
+	git tag vX.Y.Z
+	git push origin Main --tags
+	```
+
+5. GitHub Actions runs the release workflow and attaches these files to the GitHub Release:
+	- `cmdradio-vX.Y.Z-x86_64-pc-windows-msvc.zip`
+	- `cmdradio-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
+
+See [docs/RELEASING.md](docs/RELEASING.md) for the complete checklist and smoke-test guidance.

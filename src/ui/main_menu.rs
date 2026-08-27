@@ -7,7 +7,7 @@ use crate::app::App;
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let items = vec![
-        ListItem::new("Browse M3U playlists"),
+        ListItem::new("Browse playlists (M3U/PLS)"),
         ListItem::new("Full random (M3U + station)"),
         ListItem::new("Favorites"),
         ListItem::new("History (last 7 days)"),

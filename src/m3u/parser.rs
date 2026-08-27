@@ -101,6 +101,35 @@ pub fn parse_pls_file(path: &Path) -> Result<Vec<Station>, String> {
     Ok(stations)
 }
 
+pub fn count_playlist_entries(path: &Path) -> Result<usize, String> {
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pls"))
+    {
+        return Ok(raw
+            .lines()
+            .filter_map(|line| line.trim().split_once('='))
+            .filter(|(key, value)| {
+                key.trim()
+                    .to_ascii_lowercase()
+                    .strip_prefix("file")
+                    .is_some_and(|index| index.parse::<usize>().is_ok())
+                    && is_http_url(value.trim())
+            })
+            .count());
+    }
+
+    Ok(raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && is_http_url(line))
+        .count())
+}
+
 pub fn scan_m3u_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut result = Vec::new();
     let mut visited_dirs = HashSet::new();
@@ -266,6 +295,27 @@ mod tests {
         assert_eq!(parsed[0].url, "HTTPS://stream.example.org/live");
 
         let _ = fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn count_playlist_entries_matches_supported_urls() {
+        let m3u = std::env::temp_dir().join("cmdradio_count_test.m3u");
+        fs::write(
+            &m3u,
+            "#EXTM3U\nhttps://stream.example.org/a\nftp://invalid.example\nHTTP://stream.example.org/b\n",
+        )
+        .expect("m3u file created");
+        assert_eq!(count_playlist_entries(&m3u).unwrap(), 2);
+        let _ = fs::remove_file(m3u);
+
+        let pls = std::env::temp_dir().join("cmdradio_count_test.pls");
+        fs::write(
+            &pls,
+            "[playlist]\nFile1=https://stream.example.org/a\nFile2=invalid\nfile3=HTTP://stream.example.org/b\n",
+        )
+        .expect("pls file created");
+        assert_eq!(count_playlist_entries(&pls).unwrap(), 2);
+        let _ = fs::remove_file(pls);
     }
 
     #[test]

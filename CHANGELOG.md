@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.11] - 2026-08-27
+
+### Changed
+- Playlist navigation and help now identify M3U, M3U8, and PLS formats consistently.
+- Station browser entries now show the station URL below the name for easier inspection.
+- Station browser titles now show visible and total station counts, including filters.
+- `PageUp`/`PageDown` and `Home`/`End` now work in playlist, station, and station-search browsers.
+
 ## [0.4.10] - 2026-08-27
 
 ### Added
