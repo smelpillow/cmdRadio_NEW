@@ -10,6 +10,7 @@ jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
 
@@ -19,6 +20,12 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpulse-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
