@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.12] - 2026-08-31
+
+### Fixed
+- Search mode now accepts `k` and `j` as literal text instead of treating them as list-navigation keys.
+- Playlist and station search remains consistent while typing filters in the terminal UI.
+
 ## [0.4.11] - 2026-08-27
 
 ### Changed

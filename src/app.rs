@@ -64,7 +64,7 @@ const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.11";
+const APP_TITLE: &str = "cmdRadio v0.4.12";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -443,12 +443,12 @@ impl App {
 
     fn handle_playlist_search_mode(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+            KeyCode::Up => {
                 if self.playlist_index > 0 {
                     self.playlist_index -= 1;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+            KeyCode::Down => {
                 let visible_len = self.filtered_playlist_indices().len();
                 if visible_len > 0 && self.playlist_index + 1 < visible_len {
                     self.playlist_index += 1;
@@ -599,12 +599,12 @@ impl App {
 
     fn handle_station_search_mode(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+            KeyCode::Up => {
                 if self.station_index > 0 {
                     self.station_index -= 1;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+            KeyCode::Down => {
                 let visible_len = self.filtered_station_indices().len();
                 if visible_len > 0 && self.station_index + 1 < visible_len {
                     self.station_index += 1;
@@ -2093,7 +2093,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{UnplayableStation, UnplayableStationsStore, next_candidate_index};
+    use super::{App, Screen, UnplayableStation, UnplayableStationsStore, next_candidate_index};
 
     #[test]
     fn records_failures_for_each_station() {
@@ -2166,5 +2166,17 @@ mod tests {
         let candidate = next_candidate_index(1, 3, true);
         assert_ne!(candidate, 1);
         assert!(candidate < 3);
+    }
+
+    #[test]
+    fn search_mode_allows_k_as_text() {
+        let mut app = App::new().expect("app should initialize");
+        app.screen = Screen::PlaylistBrowser;
+        app.playlist_search_mode = true;
+
+        app.on_key(crossterm::event::KeyCode::Char('k'));
+
+        assert_eq!(app.playlist_query, "k");
+        assert_eq!(app.playlist_index, 0);
     }
 }
