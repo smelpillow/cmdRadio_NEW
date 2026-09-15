@@ -64,7 +64,7 @@ const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.12";
+const APP_TITLE: &str = "cmdRadio v0.4.13";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -686,6 +686,7 @@ impl App {
                 }
                 Err(err) => self.status = err,
             },
+            KeyCode::Char('c') | KeyCode::Char('C') => self.copy_now_playing(),
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Right => {
                 if self.full_random_mode {
                     self.start_full_random();
@@ -738,6 +739,19 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    fn copy_now_playing(&mut self) {
+        let (artist, title) = self.icy_artist_title();
+        let Some(text) = now_playing_copy_text(artist.as_deref(), title.as_deref()) else {
+            self.status = String::from("No artist/title metadata available");
+            return;
+        };
+
+        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)) {
+            Ok(()) => self.status = String::from("Artist and title copied to clipboard"),
+            Err(err) => self.status = format!("Could not copy artist and title: {err}"),
+        }
     }
 
     fn handle_history(&mut self, code: KeyCode) -> bool {
@@ -2091,9 +2105,23 @@ impl App {
     }
 }
 
+fn now_playing_copy_text(artist: Option<&str>, title: Option<&str>) -> Option<String> {
+    match (artist.map(str::trim), title.map(str::trim)) {
+        (Some(artist), Some(title)) if !artist.is_empty() && !title.is_empty() => {
+            Some(format!("{artist} - {title}"))
+        }
+        (Some(artist), _) if !artist.is_empty() => Some(artist.to_string()),
+        (_, Some(title)) if !title.is_empty() => Some(title.to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{App, Screen, UnplayableStation, UnplayableStationsStore, next_candidate_index};
+    use super::{
+        App, Screen, UnplayableStation, UnplayableStationsStore, next_candidate_index,
+        now_playing_copy_text,
+    };
 
     #[test]
     fn records_failures_for_each_station() {
@@ -2166,6 +2194,19 @@ mod tests {
         let candidate = next_candidate_index(1, 3, true);
         assert_ne!(candidate, 1);
         assert!(candidate < 3);
+    }
+
+    #[test]
+    fn formats_now_playing_text_for_clipboard() {
+        assert_eq!(
+            now_playing_copy_text(Some(" Artist "), Some(" Song ")),
+            Some(String::from("Artist - Song"))
+        );
+        assert_eq!(
+            now_playing_copy_text(Some("Artist"), None),
+            Some(String::from("Artist"))
+        );
+        assert_eq!(now_playing_copy_text(Some("  "), Some("  ")), None);
     }
 
     #[test]
