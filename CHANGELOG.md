@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.13] - 2026-09-15
+
+### Added
+- Press `c` in the player to copy the current artist and title to the system clipboard.
+- Player status and help text now report clipboard availability and errors.
+
 ## [0.4.12] - 2026-08-31
 
 ### Fixed

@@ -207,7 +207,7 @@ fn render_right_column(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("press ?"),
+            Span::raw("press ? | C copy artist/title"),
         ]),
     ];
 

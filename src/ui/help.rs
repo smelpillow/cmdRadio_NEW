@@ -59,6 +59,7 @@ pub fn render(frame: &mut Frame<'_>, _app: &App, area: Rect) {
         "  n/Right  Next station (or next full-random pick)",
         "  r        Toggle shuffle",
         "  *        Toggle favorite",
+        "  c        Copy artist/title to clipboard",
         "  +/-      Volume",
         "  m        Mute/Unmute",
         "  q/Esc    Stop playback and return to station browser",

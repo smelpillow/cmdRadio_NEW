@@ -76,6 +76,7 @@ All alphabetic shortcuts are case-insensitive (`n`/`N`, `q`/`Q`, etc.).
 - `f`: toggle favorites-only filter in stations/player
 - `*`: toggle favorite station
 - `Space`: play/pause
+- `c`: copy the current artist and title to the system clipboard
 - `n` or right arrow: next station (in Full Random mode: next random M3U + station)
 - `r`: toggle shuffle
 - `+` / `=`: volume up (+5%, max 100%)
