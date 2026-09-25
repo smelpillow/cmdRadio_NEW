@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.14] - 2026-09-25
+
+### Added
+- Playlist Browser sorting by total station count with the `s` shortcut.
+- Playlist sorting mode is shown in the browser title and documented in the in-app help.
+
 ## [0.4.13] - 2026-09-15
 
 ### Added

@@ -28,6 +28,7 @@ pub fn render(frame: &mut Frame<'_>, _app: &App, area: Rect) {
         "  /        Start search mode (file/path)",
         "  u        Refresh playlist scan",
         "  r        Toggle shuffle",
+        "  s        Toggle sort (name / station count)",
         "",
         "Station Browser",
         "  j/k      Move selection",

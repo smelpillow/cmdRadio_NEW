@@ -32,6 +32,12 @@ pub enum Screen {
     Help,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaylistSortMode {
+    Name,
+    StationCount,
+}
+
 fn next_candidate_index(current: usize, len: usize, shuffle: bool) -> usize {
     if len == 0 {
         return 0;
@@ -64,7 +70,7 @@ const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.13";
+const APP_TITLE: &str = "cmdRadio v0.4.14";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -199,6 +205,7 @@ pub struct App {
     station_query: String,
     playlist_search_mode: bool,
     playlist_query: String,
+    playlist_sort_mode: PlaylistSortMode,
     favorites: Vec<FavoriteEntry>,
     unplayable_stations: UnplayableStationsStore,
     playlist_cache: PlaylistCacheStore,
@@ -259,6 +266,7 @@ impl App {
             station_query: String::new(),
             playlist_search_mode: false,
             playlist_query: String::new(),
+            playlist_sort_mode: PlaylistSortMode::Name,
             favorites,
             unplayable_stations,
             playlist_cache,
@@ -405,6 +413,9 @@ impl App {
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 self.shuffle = !self.shuffle;
                 self.status = format!("Shuffle {}", if self.shuffle { "ON" } else { "OFF" });
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.toggle_playlist_sort_mode();
             }
             KeyCode::Enter => {
                 if let Some(actual_index) = self.selected_playlist_browser_index()
@@ -1183,7 +1194,8 @@ impl App {
         let query = self.playlist_query.trim().to_ascii_lowercase();
         let has_query = !query.is_empty();
 
-        self.playlists
+        let mut indices: Vec<usize> = self
+            .playlists
             .iter()
             .enumerate()
             .filter_map(|(index, path)| {
@@ -1204,13 +1216,44 @@ impl App {
                     None
                 }
             })
-            .collect()
+            .collect();
+
+        if self.playlist_sort_mode == PlaylistSortMode::StationCount {
+            indices.sort_by(|&a, &b| {
+                let count_a = self.playlist_station_count_hint(a).unwrap_or(0);
+                let count_b = self.playlist_station_count_hint(b).unwrap_or(0);
+                count_b
+                    .cmp(&count_a)
+                    .then_with(|| self.playlists[a].cmp(&self.playlists[b]))
+            });
+        }
+
+        indices
     }
 
     pub fn playlist_station_count_hint(&self, playlist_index: usize) -> Option<usize> {
         let path = self.playlists.get(playlist_index)?;
         let key = path.to_string_lossy().to_string();
         self.playlist_counts.get(&key).copied()
+    }
+
+    pub fn playlist_sort_mode(&self) -> PlaylistSortMode {
+        self.playlist_sort_mode
+    }
+
+    fn toggle_playlist_sort_mode(&mut self) {
+        self.playlist_sort_mode = match self.playlist_sort_mode {
+            PlaylistSortMode::Name => PlaylistSortMode::StationCount,
+            PlaylistSortMode::StationCount => PlaylistSortMode::Name,
+        };
+        self.playlist_index = 0;
+        self.status = format!(
+            "Playlist sort: {}",
+            match self.playlist_sort_mode {
+                PlaylistSortMode::Name => "Name",
+                PlaylistSortMode::StationCount => "Station count",
+            }
+        );
     }
 
     pub fn app_title(&self) -> &'static str {
@@ -2119,9 +2162,20 @@ fn now_playing_copy_text(artist: Option<&str>, title: Option<&str>) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::{
-        App, Screen, UnplayableStation, UnplayableStationsStore, next_candidate_index,
-        now_playing_copy_text,
+        App, PlaylistSortMode, Screen, UnplayableStation, UnplayableStationsStore,
+        next_candidate_index, now_playing_copy_text,
     };
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    fn app_for_test() -> App {
+        static APP_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = APP_INIT_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("app test lock should not be poisoned");
+        App::new().expect("app should initialize")
+    }
 
     #[test]
     fn records_failures_for_each_station() {
@@ -2211,7 +2265,7 @@ mod tests {
 
     #[test]
     fn search_mode_allows_k_as_text() {
-        let mut app = App::new().expect("app should initialize");
+        let mut app = app_for_test();
         app.screen = Screen::PlaylistBrowser;
         app.playlist_search_mode = true;
 
@@ -2219,5 +2273,35 @@ mod tests {
 
         assert_eq!(app.playlist_query, "k");
         assert_eq!(app.playlist_index, 0);
+    }
+
+    #[test]
+    fn playlist_sort_toggle_orders_by_station_count_desc() {
+        let mut app = app_for_test();
+        app.screen = Screen::PlaylistBrowser;
+        app.playlists = vec![
+            PathBuf::from("a_small.m3u"),
+            PathBuf::from("b_large.m3u"),
+            PathBuf::from("c_medium.m3u"),
+        ];
+        app.playlist_counts
+            .insert(app.playlists[0].to_string_lossy().to_string(), 2);
+        app.playlist_counts
+            .insert(app.playlists[1].to_string_lossy().to_string(), 20);
+        app.playlist_counts
+            .insert(app.playlists[2].to_string_lossy().to_string(), 5);
+
+        assert_eq!(app.playlist_sort_mode(), PlaylistSortMode::Name);
+        assert_eq!(app.filtered_playlist_indices(), vec![0, 1, 2]);
+
+        app.on_key(crossterm::event::KeyCode::Char('s'));
+
+        assert_eq!(app.playlist_sort_mode(), PlaylistSortMode::StationCount);
+        assert_eq!(app.filtered_playlist_indices(), vec![1, 2, 0]);
+
+        app.on_key(crossterm::event::KeyCode::Char('s'));
+
+        assert_eq!(app.playlist_sort_mode(), PlaylistSortMode::Name);
+        assert_eq!(app.filtered_playlist_indices(), vec![0, 1, 2]);
     }
 }
