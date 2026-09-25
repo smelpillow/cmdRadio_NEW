@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
-use crate::app::{App, Screen};
+use crate::app::{App, PlaylistSortMode, Screen};
 
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     match app.screen {
@@ -41,9 +41,13 @@ fn render_playlists(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
 
     let mut title = format!(
-        "{} - Playlists [{}] - Enter open, / search, PgUp/PgDn page, u refresh, q back",
+        "{} - Playlists [{}] - Enter open, / search, s sort ({}), PgUp/PgDn page, u refresh, q back",
         app.app_title(),
-        app.config.playlists_dir.display()
+        app.config.playlists_dir.display(),
+        match app.playlist_sort_mode() {
+            PlaylistSortMode::Name => "Name",
+            PlaylistSortMode::StationCount => "Stations",
+        }
     );
     if app.is_playlist_search_mode() {
         title = format!(

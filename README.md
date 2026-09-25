@@ -73,6 +73,7 @@ All alphabetic shortcuts are case-insensitive (`n`/`N`, `q`/`Q`, etc.).
 - `j` / `k` or arrow keys: navigate
 - `Enter`: select
 - `/`: search in station list (name/url)
+- `s`: toggle playlist sort (alphabetical / by station count) in Playlist Browser
 - `f`: toggle favorites-only filter in stations/player
 - `*`: toggle favorite station
 - `Space`: play/pause
