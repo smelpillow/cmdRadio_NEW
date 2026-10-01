@@ -58,6 +58,14 @@ Persistent data files are stored under the Data directory, including `favorites.
 
 Persistent data files are stored under the Data directory, including `favorites.json`, `history.json`, and `unplayable_stations.json`. Playlist cache data is stored under the Cache directory.
 
+### Overriding default directories
+
+If the default per-user folder is blocked by antivirus/EDR policy or leftover permissions from another account (`Access denied` / `os error 5`), set one or more of these environment variables to a writable location before launching:
+
+- `CMDRADIO_CONFIG_DIR`: overrides the config directory (`config.toml` location).
+- `CMDRADIO_DATA_DIR`: overrides the data directory (favorites, history, playlists subfolder).
+- `CMDRADIO_CACHE_DIR`: overrides the cache directory.
+
 ## Quick Start
 
 ```bash

@@ -107,8 +107,15 @@ impl AppConfig {
             .map_err(|e| format!("failed to create directory {}: {e}", path.display()))?;
 
         let test_file = path.join(".write_test");
-        fs::write(&test_file, b"ok")
-            .map_err(|e| format!("directory not writable {}: {e}", path.display()))?;
+        fs::write(&test_file, b"ok").map_err(|e| {
+            format!(
+                "directory not writable {}: {e}. This folder may be locked down by antivirus/EDR \
+                policy or leftover permissions from another account. Try fixing permissions on \
+                that folder, or set CMDRADIO_DATA_DIR / CMDRADIO_CACHE_DIR / CMDRADIO_CONFIG_DIR \
+                to a writable location.",
+                path.display()
+            )
+        })?;
         fs::remove_file(&test_file)
             .map_err(|e| format!("failed cleanup in {}: {e}", path.display()))?;
         Ok(())
@@ -134,6 +141,30 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn detect() -> Result<Self, String> {
+        let (default_config_dir, default_data_dir, default_cache_dir) = Self::default_dirs()?;
+
+        let config_dir = env::var_os("CMDRADIO_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(default_config_dir);
+        let data_dir = env::var_os("CMDRADIO_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(default_data_dir);
+        let cache_dir = env::var_os("CMDRADIO_CACHE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or(default_cache_dir);
+        let playlists_dir = data_dir.join("playlists");
+        let config_file = config_dir.join("config.toml");
+
+        Ok(Self {
+            config_dir,
+            config_file,
+            data_dir,
+            playlists_dir,
+            cache_dir,
+        })
+    }
+
+    fn default_dirs() -> Result<(PathBuf, PathBuf, PathBuf), String> {
         if cfg!(target_os = "windows") {
             let appdata = env::var_os("APPDATA")
                 .map(PathBuf::from)
@@ -144,17 +175,9 @@ impl AppPaths {
 
             let config_dir = appdata.join(APP_NAME);
             let data_dir = local_appdata.join(APP_NAME);
-            let playlists_dir = data_dir.join("playlists");
             let cache_dir = data_dir.join("cache");
-            let config_file = config_dir.join("config.toml");
 
-            Ok(Self {
-                config_dir,
-                config_file,
-                data_dir,
-                playlists_dir,
-                cache_dir,
-            })
+            Ok((config_dir, data_dir, cache_dir))
         } else {
             let home = env::var_os("HOME")
                 .map(PathBuf::from)
@@ -162,17 +185,9 @@ impl AppPaths {
 
             let config_dir = home.join(".config").join(APP_NAME);
             let data_dir = home.join(".local").join("share").join(APP_NAME);
-            let playlists_dir = data_dir.join("playlists");
             let cache_dir = home.join(".cache").join(APP_NAME);
-            let config_file = config_dir.join("config.toml");
 
-            Ok(Self {
-                config_dir,
-                config_file,
-                data_dir,
-                playlists_dir,
-                cache_dir,
-            })
+            Ok((config_dir, data_dir, cache_dir))
         }
     }
 }

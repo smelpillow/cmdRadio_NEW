@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.4.15] - 2026-10-01
+
+### Added
+- `CMDRADIO_CONFIG_DIR`, `CMDRADIO_DATA_DIR`, and `CMDRADIO_CACHE_DIR` environment variables to override the default per-user directories.
+
+### Changed
+- The directory-permission error message now explains possible antivirus/EDR causes and points to the new override variables.
+
 ## [0.4.14] - 2026-09-25
 
 ### Added

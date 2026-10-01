@@ -53,3 +53,21 @@ The release workflow is tag-driven. A normal branch push or commit does not gene
 - Changelog updated
 - Tag pushed
 - Release artifacts downloaded and tested
+
+## Code signing (Windows, optional)
+
+Unsigned binaries can be blocked by corporate EDR/antivirus (e.g. CrowdStrike Falcon) on machines where the file has low reputation/prevalence. If this becomes a recurring problem, options in order of effort:
+
+1. **Azure Trusted Signing**: cheapest path to a publicly trusted signature, built for individual/small-project maintainers. Requires an Azure subscription and identity validation.
+2. **Commercial code signing certificate** (DigiCert, Sectigo, SSL.com, etc.): broadest trust, recurring cost.
+3. **Internal/self-signed certificate**: only trusted on machines where an organization's IT deploys the root certificate via policy; does not help the general public downloading releases from GitHub.
+
+Once a `.pfx` certificate is available, sign the built binary with the Windows SDK's `signtool`:
+
+```powershell
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f certificate.pfx /p "password" target\release\cmdradio.exe
+signtool verify /pa target\release\cmdradio.exe
+```
+
+To automate this in `.github/workflows/release.yml`, add a signing step after `Build` and before `Package (Windows)` that pulls the certificate from a GitHub Actions secret (e.g. base64-encoded `.pfx` + password secrets), decodes it, and runs `signtool`. Do not add this step until the certificate/secrets actually exist, to avoid breaking the release pipeline.
+

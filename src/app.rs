@@ -70,7 +70,7 @@ const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.14";
+const APP_TITLE: &str = "cmdRadio v0.4.15";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
