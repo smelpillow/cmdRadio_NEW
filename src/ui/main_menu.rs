@@ -11,6 +11,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ListItem::new("Full random (M3U + station)"),
         ListItem::new("Favorites"),
         ListItem::new("History (last 7 days)"),
+        ListItem::new("Online search (Radio Browser)"),
         ListItem::new("Configuration"),
         ListItem::new("Exit"),
     ];

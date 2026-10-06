@@ -19,7 +19,31 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         Screen::History => history::render(frame, app, area),
         Screen::Config => render_config(frame, app, area),
         Screen::Help => help::render(frame, app, area),
+        Screen::OnlineSearch => render_online_search(frame, app, area),
     }
+}
+
+fn render_online_search(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
+    let state = if app.is_online_loading() {
+        "Searching..."
+    } else {
+        "Enter to search"
+    };
+    let body = format!(
+        "Search: {}_\n\n{state}\n\nFilters: tag:jazz country:Spain lang:spanish (combine with a name)\nIn results: Enter play, * favorite, a save to radio-browser.m3u, q back\n\n{}",
+        app.online_query(),
+        app.status
+    );
+
+    let paragraph = Paragraph::new(body).block(
+        Block::default()
+            .title(format!(
+                "{} - Online search (Radio Browser) - Esc back",
+                app.app_title()
+            ))
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(paragraph, area);
 }
 
 fn render_config(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {

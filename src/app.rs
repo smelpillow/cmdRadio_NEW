@@ -20,6 +20,7 @@ use crate::m3u::parser::{
     Station, count_playlist_entries, parse_m3u_file, parse_pls_file, scan_m3u_files,
 };
 use crate::player::audio::{PreparedAudio, RadioPlayer};
+use crate::radio_browser::{self, SearchQuery};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
@@ -30,6 +31,7 @@ pub enum Screen {
     History,
     Config,
     Help,
+    OnlineSearch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,7 +72,8 @@ const OUTPUT_SWITCH_RECOVERY_COOLDOWN_SECS: u64 = 8;
 const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-const APP_TITLE: &str = "cmdRadio v0.4.15";
+const ONLINE_PLAYLIST_FILE_NAME: &str = "radio-browser.m3u";
+const APP_TITLE: &str = "cmdRadio v0.5.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -200,6 +203,10 @@ pub struct App {
     pub current_playlist: Option<PathBuf>,
     pub config: AppConfig,
     previous_screen: Screen,
+    online_query: String,
+    online_events: Option<Receiver<Result<Vec<Station>, String>>>,
+    online_loading: bool,
+    online_origin: bool,
     station_search_mode: bool,
     station_favorites_only: bool,
     station_query: String,
@@ -261,6 +268,10 @@ impl App {
             current_playlist: None,
             config,
             previous_screen: Screen::MainMenu,
+            online_query: String::new(),
+            online_events: None,
+            online_loading: false,
+            online_origin: false,
             station_search_mode: false,
             station_favorites_only: false,
             station_query: String::new(),
@@ -296,6 +307,7 @@ impl App {
     pub fn on_tick(&mut self) {
         self.connect_spinner_index = (self.connect_spinner_index + 1) % SPINNER_FRAMES.len();
         self.poll_connection_events();
+        self.poll_online_events();
         self.monitor_playback_health();
     }
 
@@ -319,11 +331,12 @@ impl App {
             Screen::History => self.handle_history(code),
             Screen::Config => self.handle_config(code),
             Screen::Help => self.handle_help(code),
+            Screen::OnlineSearch => self.handle_online_search(code),
         }
     }
 
     fn handle_main_menu(&mut self, code: KeyCode) -> bool {
-        let menu_len = 6;
+        let menu_len = 7;
         match code {
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                 if self.main_menu_index > 0 {
@@ -350,8 +363,9 @@ impl App {
                     self.clamp_history_cursor();
                     self.screen = Screen::History;
                 }
-                4 => self.screen = Screen::Config,
-                5 => {
+                4 => self.open_online_search(),
+                5 => self.screen = Screen::Config,
+                6 => {
                     self.stop_playback();
                     return true;
                 }
@@ -597,11 +611,21 @@ impl App {
                     self.toggle_favorite(actual_index);
                 }
             }
+            KeyCode::Char('a') | KeyCode::Char('A') if self.online_origin => {
+                if let Some(actual_index) = self.selected_station_browser_index() {
+                    self.save_online_station(actual_index);
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                 self.station_search_mode = false;
                 self.station_query.clear();
                 self.station_index = 0;
-                self.screen = Screen::PlaylistBrowser;
+                if self.online_origin {
+                    self.online_origin = false;
+                    self.screen = Screen::OnlineSearch;
+                } else {
+                    self.screen = Screen::PlaylistBrowser;
+                }
             }
             _ => {}
         }
@@ -923,6 +947,120 @@ impl App {
         }
 
         self.status = String::from("No valid stations found across playlists for full random");
+    }
+
+    fn open_online_search(&mut self) {
+        self.online_origin = false;
+        self.screen = Screen::OnlineSearch;
+        self.status = String::from("Type a name; filters: tag:jazz country:Spain lang:spanish");
+    }
+
+    fn handle_online_search(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Enter => {
+                if self.online_loading {
+                    return false;
+                }
+                let query = SearchQuery::parse(&self.online_query);
+                if query.is_empty() {
+                    self.status = String::from("Enter a name or a tag:/country:/lang: filter");
+                    return false;
+                }
+                let (tx, rx) = mpsc::channel();
+                self.online_events = Some(rx);
+                self.online_loading = true;
+                self.status = String::from("Searching Radio Browser...");
+                thread::spawn(move || {
+                    let _ = tx.send(radio_browser::search(&query));
+                });
+            }
+            KeyCode::Backspace => {
+                self.online_query.pop();
+            }
+            KeyCode::Esc => {
+                self.online_events = None;
+                self.online_loading = false;
+                self.screen = Screen::MainMenu;
+            }
+            KeyCode::Char(c) if !c.is_control() => self.online_query.push(c),
+            _ => {}
+        }
+        false
+    }
+
+    fn poll_online_events(&mut self) {
+        let Some(rx) = self.online_events.as_ref() else {
+            return;
+        };
+
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err(String::from("search worker stopped")),
+        };
+
+        self.online_events = None;
+        self.online_loading = false;
+        if self.screen != Screen::OnlineSearch {
+            return;
+        }
+
+        match result {
+            Ok(stations) if stations.is_empty() => {
+                self.status = String::from("No stations found");
+            }
+            Ok(stations) => {
+                self.status = format!("Radio Browser: {} stations", stations.len());
+                self.full_random_mode = false;
+                self.stations = stations;
+                self.station_index = 0;
+                self.selected_station_index = None;
+                self.station_search_mode = false;
+                self.station_favorites_only = false;
+                self.station_query.clear();
+                self.current_playlist = None;
+                self.online_origin = true;
+                self.screen = Screen::StationBrowser;
+            }
+            Err(err) => {
+                logger::error(&format!("Radio Browser search failed: {err}"));
+                self.status = format!("Search failed: {err}");
+            }
+        }
+    }
+
+    fn save_online_station(&mut self, index: usize) {
+        let Some(station) = self.stations.get(index).cloned() else {
+            return;
+        };
+        let path = self.config.playlists_dir.join(ONLINE_PLAYLIST_FILE_NAME);
+        let existing = parse_m3u_file(&path).unwrap_or_default();
+        if existing.iter().any(|s| s.url == station.url) {
+            self.status = format!("Already saved in {ONLINE_PLAYLIST_FILE_NAME}");
+            return;
+        }
+
+        let mut content = String::from("#EXTM3U\n");
+        for s in existing.iter().chain(std::iter::once(&station)) {
+            let name = s.name.replace(['\r', '\n'], " ");
+            content.push_str(&format!("#EXTINF:-1,{name}\n{}\n", s.url));
+        }
+
+        self.status = match fs::write(&path, content) {
+            Ok(()) => {
+                self.refresh_playlists();
+                format!("Saved to {ONLINE_PLAYLIST_FILE_NAME}")
+            }
+            Err(err) => format!("Failed to save station: {err}"),
+        };
+    }
+
+    pub fn online_query(&self) -> &str {
+        &self.online_query
+    }
+
+    pub fn is_online_loading(&self) -> bool {
+        self.online_loading
     }
 
     fn open_favorites_browser(&mut self) {

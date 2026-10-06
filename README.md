@@ -12,6 +12,7 @@ Terminal-based online radio player in Rust with M3U playlist support.
 - Playlist browser for `.m3u`, `.m3u8`, and `.pls` files.
 - Safe recursive playlist scanning with protection against directory cycles.
 - Full random mode from main menu (random M3U + random station).
+- Online station discovery via Radio Browser (main menu > Online search). Filters: `tag:jazz country:Spain lang:spanish`; press `a` on a result to save it to `radio-browser.m3u`.
 - Station search by name and URL.
 - Favorites support with optional favorites-only filter; the Favorites screen loads directly from persisted favorites.
 - Player screen with playback state (`Connecting` / `Playing` / `Paused` / `Stopped`).

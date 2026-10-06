@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.5.0] - 2026-10-06
+
+### Added
+- Online search from the main menu using the Radio Browser API (name plus `tag:`, `country:`, `lang:` filters); results can be played, favorited, or saved with `a` to `radio-browser.m3u`.
+
 ## [0.4.15] - 2026-10-01
 
 ### Added

@@ -3,6 +3,7 @@ mod config;
 mod logger;
 mod m3u;
 mod player;
+mod radio_browser;
 mod ui;
 
 use std::io;
