@@ -3,8 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait};
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rodio::dynamic_mixer::{self, DynamicMixerController};
+use rodio::{Decoder, Sink, Source};
 
 use crate::logger;
 use crate::player::stream::{
@@ -17,8 +18,9 @@ const MAX_PLS_BYTES: u64 = 64 * 1024;
 const MAX_PLS_REDIRECTS: usize = 3;
 
 pub struct RadioPlayer {
-    output_stream: Option<OutputStream>,
-    stream_handle: Option<OutputStreamHandle>,
+    output_stream: Option<cpal::Stream>,
+    mixer: Option<Arc<DynamicMixerController<f32>>>,
+    stream_error: Arc<Mutex<Option<String>>>,
     bound_output_device_name: Option<String>,
     sink: Option<Sink>,
     paused: bool,
@@ -50,7 +52,8 @@ impl RadioPlayer {
     pub fn new() -> Result<Self, String> {
         Ok(Self {
             output_stream: None,
-            stream_handle: None,
+            mixer: None,
+            stream_error: Arc::new(Mutex::new(None)),
             bound_output_device_name: None,
             sink: None,
             paused: false,
@@ -195,12 +198,13 @@ impl RadioPlayer {
         self.stream_bitrate_kbps = prepared.bitrate_kbps;
         self.stream_content_type = prepared.content_type;
 
-        let handle = self
-            .stream_handle
+        let mixer = self
+            .mixer
             .as_ref()
-            .ok_or_else(|| String::from("audio stream handle not available"))?;
+            .ok_or_else(|| String::from("audio mixer not available"))?;
 
-        let sink = Sink::try_new(handle).map_err(|e| format!("failed to create sink: {e}"))?;
+        let (sink, queue_output) = Sink::new_idle();
+        mixer.add(queue_output);
         sink.set_volume(self.volume);
         sink.append(prepared.source);
         sink.play();
@@ -292,13 +296,18 @@ impl RadioPlayer {
         current_name != *bound_name
     }
 
+    /// Returns the last error reported by the audio backend, if any.
+    pub fn take_stream_error(&self) -> Option<String> {
+        self.stream_error.lock().ok()?.take()
+    }
+
     pub fn invalidate_output_device(&mut self) {
         if let Some(sink) = self.sink.take() {
             sink.stop();
         }
         logger::warn("invalidating audio output device and sink for rebind");
         self.output_stream = None;
-        self.stream_handle = None;
+        self.mixer = None;
         self.bound_output_device_name = None;
         self.paused = false;
     }
@@ -326,7 +335,7 @@ impl RadioPlayer {
 
     fn ensure_output(&mut self) -> Result<(), String> {
         let current_default_name = current_default_output_device_name();
-        let has_output = self.output_stream.is_some() && self.stream_handle.is_some();
+        let has_output = self.output_stream.is_some() && self.mixer.is_some();
         let device_changed = match (
             self.bound_output_device_name.as_deref(),
             current_default_name.as_deref(),
@@ -340,11 +349,11 @@ impl RadioPlayer {
                 logger::warn("default output device change detected in ensure_output");
             }
             self.output_stream = None;
-            self.stream_handle = None;
-            let (stream, handle) = OutputStream::try_default()
+            self.mixer = None;
+            let (stream, mixer) = open_default_output(Arc::clone(&self.stream_error))
                 .map_err(|e| format!("audio output init failed: {e}"))?;
             self.output_stream = Some(stream);
-            self.stream_handle = Some(handle);
+            self.mixer = Some(mixer);
             self.bound_output_device_name = current_default_output_device_name();
             if let Some(name) = self.bound_output_device_name.as_deref() {
                 logger::info(&format!("audio output bound to default device: {}", name));
@@ -461,6 +470,57 @@ fn is_http_url(value: &str) -> bool {
         || value
             .get(..8)
             .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+}
+
+fn open_default_output(
+    error_slot: Arc<Mutex<Option<String>>>,
+) -> Result<(cpal::Stream, Arc<DynamicMixerController<f32>>), String> {
+    let device = cpal::default_host()
+        .default_output_device()
+        .ok_or_else(|| String::from("no default output device"))?;
+    let config = device
+        .default_output_config()
+        .map_err(|e| format!("default output config unavailable: {e}"))?;
+    let (controller, mut mixer) =
+        dynamic_mixer::mixer::<f32>(config.channels(), config.sample_rate().0);
+
+    let on_error = move |err: cpal::StreamError| {
+        logger::warn(&format!("audio output stream error: {err}"));
+        if let Ok(mut slot) = error_slot.lock() {
+            *slot = Some(err.to_string());
+        }
+    };
+
+    macro_rules! build {
+        ($sample:ty) => {
+            device.build_output_stream::<$sample, _, _>(
+                &config.config(),
+                move |data, _| {
+                    for out in data.iter_mut() {
+                        *out = <$sample as cpal::Sample>::from_sample(mixer.next().unwrap_or(0.0));
+                    }
+                },
+                on_error,
+                None,
+            )
+        };
+    }
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => build!(f32),
+        cpal::SampleFormat::I16 => build!(i16),
+        cpal::SampleFormat::U16 => build!(u16),
+        cpal::SampleFormat::I32 => build!(i32),
+        cpal::SampleFormat::U8 => build!(u8),
+        other => return Err(format!("unsupported sample format: {other:?}")),
+    }
+    .map_err(|e| format!("failed to build output stream: {e}"))?;
+
+    stream
+        .play()
+        .map_err(|e| format!("failed to start output stream: {e}"))?;
+
+    Ok((stream, controller))
 }
 
 fn current_default_output_device_name() -> Option<String> {

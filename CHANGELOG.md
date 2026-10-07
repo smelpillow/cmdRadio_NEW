@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [0.5.1] - 2026-10-07
+
+### Fixed
+- Audio backend errors (for example when switching Bluetooth/USB outputs) are no longer printed over the terminal UI; they now appear in the Status line and the diagnostics log.
+
+### Changed
+- Short-lived status messages (favorite, volume, mute, shuffle, copy, save, audio output) disappear after 30 seconds and the Status returns to the current playback state.
+
 ## [0.5.0] - 2026-10-06
 
 ### Added

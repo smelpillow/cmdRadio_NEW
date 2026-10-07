@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AppConfig;
@@ -73,7 +73,8 @@ const PLAYLIST_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const UNPLAYABLE_THRESHOLD: u64 = 3;
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 const ONLINE_PLAYLIST_FILE_NAME: &str = "radio-browser.m3u";
-const APP_TITLE: &str = "cmdRadio v0.5.0";
+const TEMP_STATUS_SECS: u64 = 30;
+const APP_TITLE: &str = "cmdRadio v0.5.1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HistoryEntry {
@@ -203,6 +204,7 @@ pub struct App {
     pub current_playlist: Option<PathBuf>,
     pub config: AppConfig,
     previous_screen: Screen,
+    transient_status: Option<(String, Instant)>,
     online_query: String,
     online_events: Option<Receiver<Result<Vec<Station>, String>>>,
     online_loading: bool,
@@ -268,6 +270,7 @@ impl App {
             current_playlist: None,
             config,
             previous_screen: Screen::MainMenu,
+            transient_status: None,
             online_query: String::new(),
             online_events: None,
             online_loading: false,
@@ -308,6 +311,8 @@ impl App {
         self.connect_spinner_index = (self.connect_spinner_index + 1) % SPINNER_FRAMES.len();
         self.poll_connection_events();
         self.poll_online_events();
+        self.poll_audio_errors();
+        self.expire_temp_status(Instant::now());
         self.monitor_playback_health();
     }
 
@@ -426,7 +431,10 @@ impl App {
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 self.shuffle = !self.shuffle;
-                self.status = format!("Shuffle {}", if self.shuffle { "ON" } else { "OFF" });
+                self.set_temp_status(format!(
+                    "Shuffle {}",
+                    if self.shuffle { "ON" } else { "OFF" }
+                ));
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
                 self.toggle_playlist_sort_mode();
@@ -731,7 +739,10 @@ impl App {
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 self.shuffle = !self.shuffle;
-                self.status = format!("Shuffle {}", if self.shuffle { "ON" } else { "OFF" });
+                self.set_temp_status(format!(
+                    "Shuffle {}",
+                    if self.shuffle { "ON" } else { "OFF" }
+                ));
             }
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 self.station_favorites_only = !self.station_favorites_only;
@@ -755,7 +766,7 @@ impl App {
                 }
                 let new_vol = self.player.adjust_volume(0.05);
                 self.persist_volume(new_vol);
-                self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
+                self.set_temp_status(format!("Volume: {}%", (new_vol * 100.0).round() as u8));
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
                 if self.is_muted {
@@ -763,7 +774,7 @@ impl App {
                 }
                 let new_vol = self.player.adjust_volume(-0.05);
                 self.persist_volume(new_vol);
-                self.status = format!("Volume: {}%", (new_vol * 100.0).round() as u8);
+                self.set_temp_status(format!("Volume: {}%", (new_vol * 100.0).round() as u8));
             }
             KeyCode::Char('m') | KeyCode::Char('M') => self.toggle_mute(),
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -779,13 +790,13 @@ impl App {
     fn copy_now_playing(&mut self) {
         let (artist, title) = self.icy_artist_title();
         let Some(text) = now_playing_copy_text(artist.as_deref(), title.as_deref()) else {
-            self.status = String::from("No artist/title metadata available");
+            self.set_temp_status(String::from("No artist/title metadata available"));
             return;
         };
 
         match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)) {
-            Ok(()) => self.status = String::from("Artist and title copied to clipboard"),
-            Err(err) => self.status = format!("Could not copy artist and title: {err}"),
+            Ok(()) => self.set_temp_status(String::from("Artist and title copied to clipboard")),
+            Err(err) => self.set_temp_status(format!("Could not copy artist and title: {err}")),
         }
     }
 
@@ -949,6 +960,40 @@ impl App {
         self.status = String::from("No valid stations found across playlists for full random");
     }
 
+    fn set_temp_status(&mut self, message: String) {
+        self.status = message.clone();
+        self.transient_status = Some((message, Instant::now()));
+    }
+
+    fn poll_audio_errors(&mut self) {
+        if let Some(err) = self.player.take_stream_error() {
+            self.set_temp_status(format!("Audio output error: {err}"));
+        }
+    }
+
+    fn base_status(&self) -> String {
+        let name = self.selected_station_name().unwrap_or_default();
+        match self.playback_state_label() {
+            "Playing" => format!("Playing {name}"),
+            "Paused" => format!("Paused: {name}"),
+            "Connecting" => format!("Connecting: {}", self.connect_station_name),
+            _ => String::from("Ready"),
+        }
+    }
+
+    fn expire_temp_status(&mut self, now: Instant) {
+        let Some((message, since)) = self.transient_status.as_ref() else {
+            return;
+        };
+
+        if self.status != *message {
+            self.transient_status = None;
+        } else if now.duration_since(*since) >= Duration::from_secs(TEMP_STATUS_SECS) {
+            self.transient_status = None;
+            self.status = self.base_status();
+        }
+    }
+
     fn open_online_search(&mut self) {
         self.online_origin = false;
         self.screen = Screen::OnlineSearch;
@@ -1036,7 +1081,7 @@ impl App {
         let path = self.config.playlists_dir.join(ONLINE_PLAYLIST_FILE_NAME);
         let existing = parse_m3u_file(&path).unwrap_or_default();
         if existing.iter().any(|s| s.url == station.url) {
-            self.status = format!("Already saved in {ONLINE_PLAYLIST_FILE_NAME}");
+            self.set_temp_status(format!("Already saved in {ONLINE_PLAYLIST_FILE_NAME}"));
             return;
         }
 
@@ -1046,13 +1091,14 @@ impl App {
             content.push_str(&format!("#EXTINF:-1,{name}\n{}\n", s.url));
         }
 
-        self.status = match fs::write(&path, content) {
+        let message = match fs::write(&path, content) {
             Ok(()) => {
                 self.refresh_playlists();
                 format!("Saved to {ONLINE_PLAYLIST_FILE_NAME}")
             }
             Err(err) => format!("Failed to save station: {err}"),
         };
+        self.set_temp_status(message);
     }
 
     pub fn online_query(&self) -> &str {
@@ -1260,7 +1306,7 @@ impl App {
         if self.is_muted {
             let restored = self.restore_unmuted_volume();
             self.persist_volume(restored);
-            self.status = format!("Unmuted: {}%", (restored * 100.0).round() as u8);
+            self.set_temp_status(format!("Unmuted: {}%", (restored * 100.0).round() as u8));
         } else {
             let current = self.player.volume();
             if current > 0.0 {
@@ -1268,7 +1314,7 @@ impl App {
             }
             self.player.set_volume(0.0);
             self.is_muted = true;
-            self.status = String::from("Muted");
+            self.set_temp_status(String::from("Muted"));
         }
     }
 
@@ -1697,10 +1743,10 @@ impl App {
 
         match self.save_favorites() {
             Ok(()) => {
-                self.status = format!("Favorite {action}: {name}");
+                self.set_temp_status(format!("Favorite {action}: {name}"));
             }
             Err(err) => {
-                self.status = format!("Favorite {action} but save failed: {err}");
+                self.set_temp_status(format!("Favorite {action} but save failed: {err}"));
             }
         }
     }
@@ -2131,7 +2177,9 @@ impl App {
         };
 
         self.last_output_recovery_epoch_secs = Some(now);
-        self.status = String::from("Audio output changed. Reconnecting current station...");
+        self.set_temp_status(String::from(
+            "Audio output changed. Reconnecting current station...",
+        ));
         logger::warn(&format!(
             "output device switch detected, attempting reconnect: station={} url={}",
             station.name, station.url
@@ -2300,11 +2348,12 @@ fn now_playing_copy_text(artist: Option<&str>, title: Option<&str>) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::{
-        App, PlaylistSortMode, Screen, UnplayableStation, UnplayableStationsStore,
-        next_candidate_index, now_playing_copy_text,
+        App, PlaylistSortMode, Screen, TEMP_STATUS_SECS, UnplayableStation,
+        UnplayableStationsStore, next_candidate_index, now_playing_copy_text,
     };
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
 
     fn app_for_test() -> App {
         static APP_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2313,6 +2362,30 @@ mod tests {
             .lock()
             .expect("app test lock should not be poisoned");
         App::new().expect("app should initialize")
+    }
+
+    #[test]
+    fn temp_status_expires_to_base_status() {
+        let mut app = app_for_test();
+        app.set_temp_status(String::from("Volume: 50%"));
+
+        app.expire_temp_status(Instant::now());
+        assert_eq!(app.status, "Volume: 50%");
+
+        app.expire_temp_status(Instant::now() + Duration::from_secs(TEMP_STATUS_SECS + 1));
+        assert_eq!(app.status, "Ready");
+        assert!(app.transient_status.is_none());
+    }
+
+    #[test]
+    fn temp_status_does_not_override_newer_status() {
+        let mut app = app_for_test();
+        app.set_temp_status(String::from("Muted"));
+        app.status = String::from("Playing Foo");
+
+        app.expire_temp_status(Instant::now() + Duration::from_secs(TEMP_STATUS_SECS + 1));
+        assert_eq!(app.status, "Playing Foo");
+        assert!(app.transient_status.is_none());
     }
 
     #[test]
